@@ -11,7 +11,6 @@ TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
 ADMIN_CHAT_ID = "8854743478"
 
 # In-Memory Storage
-# Structure: { "Worker1": {"created": 0, "done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0} }
 workers_stats = {}
 
 # Folder paths for pending files
@@ -23,14 +22,15 @@ os.makedirs(REVERSE_FOLDER, exist_ok=True)
 def send_telegram_msg(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_id,
+        "chat_id": str(chat_id),
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=5)
+        print(f"Telegram API Status: {res.status_code}, Response: {res.text}")
     except Exception as e:
         print(f"Telegram Notification Error: {e}")
 
@@ -73,13 +73,13 @@ def handle_event():
 
     # Live Event Notification to Admin
     msg = (
-        f"⚡ *WORKER EVENT UPDATE*\n"
-        f"👤 *Worker:* `{worker}`\n"
-        f"📧 *Email:* `{email}`\n"
-        f"🏷️ *Status:* `{status.upper()}`\n\n"
-        f"📊 *Stats for {worker}:*\n"
-        f"✅ Done: `{stats['done']}` | ❌ Wrong Pass: `{stats['wrong_pass']}`\n"
-        f"⚠️ Login Failed: `{stats['login_failed']}` | 🛠️ Manage: `{stats['manage']}`"
+        f"⚡ <b>WORKER EVENT UPDATE</b>\n"
+        f"👤 <b>Worker:</b> <code>{worker}</code>\n"
+        f"📧 <b>Email:</b> <code>{email}</code>\n"
+        f"🏷️ <b>Status:</b> <code>{status.upper()}</code>\n\n"
+        f"📊 <b>Stats for {worker}:</b>\n"
+        f"✅ Done: <code>{stats['done']}</code> | ❌ Wrong Pass: <code>{stats['wrong_pass']}</code>\n"
+        f"⚠️ Login Failed: <code>{stats['login_failed']}</code> | 🛠️ Manage: <code>{stats['manage']}</code>"
     )
     send_telegram_msg(ADMIN_CHAT_ID, msg)
     return jsonify({"status": "success"})
@@ -88,7 +88,6 @@ def handle_event():
 # 2. FILE ALLOCATION & REVERSE ENDPOINTS
 # ==========================================
 
-# Worker calls this to fetch assigned pending files
 @app.route('/get-files/<worker_name>', methods=['GET'])
 def get_files(worker_name):
     worker_dir = os.path.join(UPLOAD_FOLDER, worker_name)
@@ -104,19 +103,18 @@ def get_files(worker_name):
                 file_data.append({"filename": f, "content": json.load(fname)})
             except:
                 pass
-        os.remove(file_path) # Move out once delivered
+        os.remove(file_path)
         
     return jsonify({"files": file_data})
 
-# Worker calls this during "Reverse" action to send unprocessed files back
 @app.route('/reverse-files', methods=['POST'])
 def receive_reverse_files():
     data = request.json or {}
     worker = data.get('worker_name', 'Unknown')
-    returned_files = data.get('files', []) # List of filenames/contents
+    returned_files = data.get('files', [])
 
     count = len(returned_files)
-    msg = f"🔄 *REVERSE FILES RECEIVED*\n👤 *Worker:* `{worker}`\n📁 *Files Returned:* `{count}`"
+    msg = f"🔄 <b>REVERSE FILES RECEIVED</b>\n👤 <b>Worker:</b> <code>{worker}</code>\n📁 <b>Files Returned:</b> <code>{count}</code>"
     send_telegram_msg(ADMIN_CHAT_ID, msg)
     
     return jsonify({"status": "success", "received": count})
@@ -131,44 +129,47 @@ def telegram_webhook():
     chat_id = str(message.get('chat', {}).get('id', ''))
     text = message.get('text', '').strip()
 
+    print(f"Received Message from Chat ID: {chat_id}, Text: {text}")
+
     if chat_id != str(ADMIN_CHAT_ID):
+        print(f"Unauthorized access attempt by Chat ID: {chat_id}")
         return jsonify({"status": "unauthorized"})
 
-    # Command: /stats
+    # Command: /stats or /start
     if text in ['/stats', '/start']:
         if not workers_stats:
-            send_telegram_msg(chat_id, "⚠️ **Abhi kisi worker ka data active nahi hai.**")
+            send_telegram_msg(chat_id, "⚠️ <b>System Active!</b> Abhi kisi worker ka data active nahi hai.")
             return jsonify({"status": "ok"})
 
-        report = "📊 **ALL WORKERS LIVE REPORT**\n───────────────────\n\n"
+        report = "📊 <b>ALL WORKERS LIVE REPORT</b>\n───────────────────\n\n"
         total_done = 0
         for w_name, s in workers_stats.items():
             report += (
-                f"👤 **Worker:** `{w_name}`\n"
-                f" ├ ✅ Files Done: `{s['done']}`\n"
-                f" ├ ❌ Wrong Pass: `{s['wrong_pass']}`\n"
-                f" ├ ⚠️ Login Failed: `{s['login_failed']}`\n"
-                f" ├ 🛠️ Manage: `{s['manage']}`\n"
-                f" └ 🆕 Total Created: `{s['created']}`\n\n"
+                f"👤 <b>Worker:</b> <code>{w_name}</code>\n"
+                f" ├ ✅ Files Done: <code>{s['done']}</code>\n"
+                f" ├ ❌ Wrong Pass: <code>{s['wrong_pass']}</code>\n"
+                f" ├ ⚠️ Login Failed: <code>{s['login_failed']}</code>\n"
+                f" ├ 🛠️ Manage: <code>{s['manage']}</code>\n"
+                f" └ 🆕 Total Created: <code>{s['created']}</code>\n\n"
             )
             total_done += s['done']
 
-        report += f"───────────────────\n🏆 **OVERALL TOTAL DONE:** `{total_done}`"
+        report += f"───────────────────\n🏆 <b>OVERALL TOTAL DONE:</b> <code>{total_done}</code>"
         send_telegram_msg(chat_id, report)
 
     # Command: /reset
     elif text == '/reset':
         workers_stats.clear()
-        send_telegram_msg(chat_id, "🧹 **Sabhi workers ke stats clear (0) kar diye gaye hain.**")
+        send_telegram_msg(chat_id, "🧹 <b>Sabhi workers ke stats clear (0) kar diye gaye hain.</b>")
 
     # Command: /help
     elif text == '/help':
         help_msg = (
-            "👑 **ADMIN CONTROL MENU**\n\n"
-            "🔹 `/stats` - Live worker metrics dekhein\n"
-            "🔹 `/reset` - Daily stats clear karein\n"
-            "🔹 `/send <worker> <count>` - Files assign karein\n"
-            "🔹 `/reverse <worker>` - Worker se bachi files wapas lein"
+            "👑 <b>ADMIN CONTROL MENU</b>\n\n"
+            "🔹 <code>/stats</code> - Live worker metrics dekhein\n"
+            "🔹 <code>/reset</code> - Daily stats clear karein\n"
+            "🔹 <code>/send &lt;worker&gt; &lt;count&gt;</code> - Files assign karein\n"
+            "🔹 <code>/reverse &lt;worker&gt;</code> - Worker se bachi files wapas lein"
         )
         send_telegram_msg(chat_id, help_msg)
 
