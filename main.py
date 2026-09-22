@@ -13,7 +13,7 @@ ADMIN_CHAT_ID = "8854743478"
 # In-Memory Storage
 workers_stats = {}
 
-# Folder paths for pending files
+# Folder paths
 UPLOAD_FOLDER = 'worker_files'
 REVERSE_FOLDER = 'reversed_files'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -129,10 +129,7 @@ def telegram_webhook():
     chat_id = str(message.get('chat', {}).get('id', ''))
     text = message.get('text', '').strip()
 
-    print(f"Received Message from Chat ID: {chat_id}, Text: {text}")
-
     if chat_id != str(ADMIN_CHAT_ID):
-        print(f"Unauthorized access attempt by Chat ID: {chat_id}")
         return jsonify({"status": "unauthorized"})
 
     # Command: /stats or /start
@@ -157,6 +154,15 @@ def telegram_webhook():
         report += f"───────────────────\n🏆 <b>OVERALL TOTAL DONE:</b> <code>{total_done}</code>"
         send_telegram_msg(chat_id, report)
 
+    # Command: /reverse <worker_name>
+    elif text.startswith('/reverse'):
+        parts = text.split()
+        if len(parts) < 2:
+            send_telegram_msg(chat_id, "⚠️ **Usage:** <code>/reverse worker_name</code>\n*Example:* <code>/reverse vansh</code>")
+        else:
+            target_worker = parts[1]
+            send_telegram_msg(chat_id, f"🔄 <b>Reverse Signal Initiated!</b>\nWorker <code>{target_worker}</code> se files pull ki ja rahi hain...")
+
     # Command: /reset
     elif text == '/reset':
         workers_stats.clear()
@@ -168,8 +174,8 @@ def telegram_webhook():
             "👑 <b>ADMIN CONTROL MENU</b>\n\n"
             "🔹 <code>/stats</code> - Live worker metrics dekhein\n"
             "🔹 <code>/reset</code> - Daily stats clear karein\n"
-            "🔹 <code>/send &lt;worker&gt; &lt;count&gt;</code> - Files assign karein\n"
-            "🔹 <code>/reverse &lt;worker&gt;</code> - Worker se bachi files wapas lein"
+            "🔹 <code>/reverse &lt;worker&gt;</code> - Worker se bachi files wapas lein\n"
+            "🔹 <code>/help</code> - Command list show karein"
         )
         send_telegram_msg(chat_id, help_msg)
 
