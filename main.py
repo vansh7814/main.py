@@ -11,7 +11,6 @@ TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
 ADMIN_CHAT_ID = "8854743478"
 
 # In-Memory Storage
-# Structure: { "Worker1": {"created": 0, "done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0, "last_seen": timestamp} }
 workers_stats = {}
 
 UPLOAD_FOLDER = 'worker_files'
@@ -32,21 +31,19 @@ def send_telegram_msg(chat_id, text):
         print(f"Telegram Notification Error: {e}")
 
 def get_watcher_status(worker_name):
-    # Agar pichhle 60 seconds mein signal aaya hai to Online, nahi to Offline
     if worker_name not in workers_stats:
-        return "🔴 Offline (Watcher OFF)"
+        return "Watcher OFF"
     last_seen = workers_stats[worker_name].get("last_seen", 0)
+    # Agar 65 seconds ke andar ping aaya hai to ON, nahi to OFF
     if time.time() - last_seen <= 65:
-        return "🟢 Active (Watcher ON)"
-    return "🔴 Inactive (Watcher OFF)"
+        return "Watcher ON"
+    return "Watcher OFF"
 
 @app.route('/', methods=['GET'])
 def home():
     return "Admin & Worker Control API is Live!"
 
-# ==========================================
-# 1. WORKER HEARTBEAT / PING ENDPOINT
-# ==========================================
+# Heartbeat Ping endpoint
 @app.route('/ping', methods=['POST'])
 def ping():
     data = request.json or {}
@@ -63,16 +60,13 @@ def ping():
 
     return jsonify({"status": "pong"})
 
-# ==========================================
-# 2. WORKER LIVE EVENTS ENDPOINT
-# ==========================================
+# Event update handler
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
     
     event_type = data.get('event', '')
-    email = data.get('email', 'Unknown')
-    worker = data.get('worker_name', 'Worker1')
+    worker = data.get('worker_name', 'vansh')
     status = data.get('status', 'done')
 
     if worker not in workers_stats:
@@ -99,23 +93,16 @@ def handle_event():
 
     watcher_status = get_watcher_status(worker)
 
-    # Format exactly as requested
+    # Aapke format ke hisab se simple message
     msg = (
-        f"⚡ <b>WORKER EVENT UPDATE</b>\n"
-        f"👤 <b>Worker:</b> <code>{worker}</code>\n"
-        f"📡 <b>Watcher Status:</b> {watcher_status}\n"
-        f"📧 <b>Email:</b> <code>{email}</code>\n"
-        f"🏷️ <b>Status:</b> <code>{status.upper()}</code>\n\n"
-        f"📊 <b>Stats for {worker}:</b>\n"
-        f"✅ Done: <code>{stats['done']}</code> | ❌ Wrong Pass: <code>{stats['wrong_pass']}</code>\n"
-        f"⚠️ Login Failed: <code>{stats['login_failed']}</code> | 🛠️ Manage: <code>{stats['manage']}</code>"
+        f"<b>Stats for {worker}</b>\n"
+        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
+        f"✅ <b>Done:</b> {stats['done']} | ❌ <b>Wrong Pass:</b> {stats['wrong_pass']} | ⚠️ <b>Login Failed:</b> {stats['login_failed']} | 🛠️ <b>Manage:</b> {stats['manage']}"
     )
     send_telegram_msg(ADMIN_CHAT_ID, msg)
     return jsonify({"status": "success"})
 
-# ==========================================
-# 3. TELEGRAM ADMIN WEBHOOK CONTROL
-# ==========================================
+# Telegram Webhook endpoint (/stats, /reset)
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
     update = request.json or {}
@@ -128,30 +115,22 @@ def telegram_webhook():
 
     if text in ['/stats', '/start']:
         if not workers_stats:
-            send_telegram_msg(chat_id, "⚠️ <b>System Active!</b> Abhi kisi worker ka data active nahi hai.")
+            send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
             return jsonify({"status": "ok"})
 
-        report = "📊 <b>ALL WORKERS LIVE REPORT</b>\n───────────────────\n\n"
-        total_done = 0
+        report = ""
         for w_name, s in workers_stats.items():
             w_status = get_watcher_status(w_name)
             report += (
-                f"👤 <b>Worker:</b> <code>{w_name}</code>\n"
-                f"📡 <b>Watcher:</b> {w_status}\n"
-                f" ├ ✅ Files Done: <code>{s['done']}</code>\n"
-                f" ├ ❌ Wrong Pass: <code>{s['wrong_pass']}</code>\n"
-                f" ├ ⚠️ Login Failed: <code>{s['login_failed']}</code>\n"
-                f" ├ 🛠️ Manage: <code>{s['manage']}</code>\n"
-                f" └ 🆕 Total Created: <code>{s['created']}</code>\n\n"
+                f"<b>Stats for {w_name}</b>\n"
+                f"<b>Status :</b> <code>{w_status}</code>\n"
+                f"Done: {s['done']} | Wrong Pass: {s['wrong_pass']} | Login Failed: {s['login_failed']} | Manage: {s['manage']}\n\n"
             )
-            total_done += s['done']
+        send_telegram_msg(chat_id, report.strip())
 
-        report += f"───────────────────\n🏆 <b>OVERALL TOTAL DONE:</b> <code>{total_done}</code>"
-        send_telegram_msg(chat_id, report)
-
-    elif text == '/reset' or text == '/clean':
+    elif text in ['/reset', '/clean']:
         workers_stats.clear()
-        send_telegram_msg(chat_id, "🧹 <b>Sabhi workers ke stats clear (0) kar diye gaye hain.</b>")
+        send_telegram_msg(chat_id, "🧹 Sabhi workers ke stats clear (0) kar diye gaye hain.")
 
     return jsonify({"status": "ok"})
 
