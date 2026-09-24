@@ -6,11 +6,11 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Telegram Configurations
 TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
 ADMIN_CHAT_ID = "8854743478"
 
 # In-Memory Storage
+# Structure: { "Worker1": {"done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": timestamp} }
 workers_stats = {}
 
 UPLOAD_FOLDER = 'worker_files'
@@ -34,10 +34,27 @@ def get_watcher_status(worker_name):
     if worker_name not in workers_stats:
         return "Watcher OFF"
     last_seen = workers_stats[worker_name].get("last_seen", 0)
-    # Agar 65 seconds ke andar ping aaya hai to ON, nahi to OFF
     if time.time() - last_seen <= 65:
         return "Watcher ON"
     return "Watcher OFF"
+
+def build_message(worker, stats):
+    watcher_status = get_watcher_status(worker)
+    done = stats.get('done', 0)
+    wrong_pass = stats.get('wrong_pass', 0)
+    login_failed = stats.get('login_failed', 0)
+    manage = stats.get('manage', 0)
+    total_assigned = stats.get('total_assigned', 0)
+    taken = stats.get('taken', 0)
+    
+    # Total json used = done + wrong_pass + login_failed + manage
+    json_used = done + wrong_pass + login_failed + manage
+
+    return (
+        f"<b>Stats for {worker} |📦 X-Data {done}/{total_assigned}</b>\n"
+        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
+        f"✅ <b>json used : {json_used}</b> | 📧<b>{taken} taken</b> | ❌ <b>Wrong Pass:</b> {wrong_pass} | ⚠️ <b>Login Failed:</b> {login_failed} | 🛠️ <b>Manage:</b> {manage}"
+    )
 
 @app.route('/', methods=['GET'])
 def home():
@@ -51,9 +68,8 @@ def ping():
 
     if worker not in workers_stats:
         workers_stats[worker] = {
-            "created": 0, "done": 0,
-            "login_failed": 0, "wrong_pass": 0, "manage": 0,
-            "last_seen": time.time()
+            "done": 0, "login_failed": 0, "wrong_pass": 0,
+            "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": time.time()
         }
     else:
         workers_stats[worker]["last_seen"] = time.time()
@@ -66,21 +82,29 @@ def handle_event():
     data = request.json or {}
     
     event_type = data.get('event', '')
-    worker = data.get('worker_name', 'vansh')
+    worker = data.get('worker_name', 'Worker1')
     status = data.get('status', 'done')
+    
+    total_assigned = data.get('total_assigned', None)
+    taken_val = data.get('taken', None)
 
     if worker not in workers_stats:
         workers_stats[worker] = {
-            "created": 0, "done": 0, 
-            "login_failed": 0, "wrong_pass": 0, "manage": 0,
-            "last_seen": time.time()
+            "done": 0, "login_failed": 0, "wrong_pass": 0,
+            "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": time.time()
         }
 
     stats = workers_stats[worker]
     stats["last_seen"] = time.time()
 
+    if total_assigned is not None:
+        stats["total_assigned"] = total_assigned
+    if taken_val is not None:
+        stats["taken"] = taken_val
+
+    # Jab bhi nayi mail pick hogi (emailcreated), taken count badhega
     if event_type == 'emailcreated':
-        stats["created"] += 1
+        stats["taken"] += 1
     elif event_type == 'emailused':
         if status == 'login_failed':
             stats["login_failed"] += 1
@@ -91,14 +115,7 @@ def handle_event():
         else:
             stats["done"] += 1
 
-    watcher_status = get_watcher_status(worker)
-
-    # Aapke format ke hisab se simple message
-    msg = (
-        f"<b>Stats for {worker}</b>\n"
-        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
-        f"✅ <b>Done:</b> {stats['done']} | ❌ <b>Wrong Pass:</b> {stats['wrong_pass']} | ⚠️ <b>Login Failed:</b> {stats['login_failed']} | 🛠️ <b>Manage:</b> {stats['manage']}"
-    )
+    msg = build_message(worker, stats)
     send_telegram_msg(ADMIN_CHAT_ID, msg)
     return jsonify({"status": "success"})
 
@@ -118,15 +135,10 @@ def telegram_webhook():
             send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
             return jsonify({"status": "ok"})
 
-        report = ""
+        report = []
         for w_name, s in workers_stats.items():
-            w_status = get_watcher_status(w_name)
-            report += (
-                f"<b>Stats for {w_name}</b>\n"
-                f"<b>Status :</b> <code>{w_status}</code>\n"
-                f"Done: {s['done']} | Wrong Pass: {s['wrong_pass']} | Login Failed: {s['login_failed']} | Manage: {s['manage']}\n\n"
-            )
-        send_telegram_msg(chat_id, report.strip())
+            report.append(build_message(w_name, s))
+        send_telegram_msg(chat_id, "\n\n".join(report))
 
     elif text in ['/reset', '/clean']:
         workers_stats.clear()
