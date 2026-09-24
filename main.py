@@ -10,23 +10,46 @@ TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
 ADMIN_CHAT_ID = "8854743478"
 
 # In-Memory Storage
-# Structure: { "Worker1": {"done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": timestamp} }
 workers_stats = {}
+# Har worker ke live message ki ID track karne ke liye: { "vansh": 12345 }
+worker_messages = {}
 
 UPLOAD_FOLDER = 'worker_files'
 REVERSE_FOLDER = 'reversed_files'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(REVERSE_FOLDER, exist_ok=True)
 
-def send_telegram_msg(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def send_or_edit_telegram_msg(worker, text):
+    msg_id = worker_messages.get(worker)
+
+    if msg_id:
+        # Puraane message ko edit karne ki koshish karein
+        edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+        payload = {
+            "chat_id": str(ADMIN_CHAT_ID),
+            "message_id": msg_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        try:
+            res = requests.post(edit_url, json=payload, timeout=5).json()
+            if res.get("ok"):
+                return
+            # Agar edit fail ho jaye (message deleted ya puraana ho), toh fall back to send
+        except Exception:
+            pass
+
+    # Agar purana message nahi hai ya edit fail hua, toh naya message bhejein
+    send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": str(chat_id),
+        "chat_id": str(ADMIN_CHAT_ID),
         "text": text,
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(send_url, json=payload, timeout=5).json()
+        if res.get("ok"):
+            worker_messages[worker] = res["result"]["message_id"]
     except Exception as e:
         print(f"Telegram Notification Error: {e}")
 
@@ -47,7 +70,6 @@ def build_message(worker, stats):
     total_assigned = stats.get('total_assigned', 0)
     taken = stats.get('taken', 0)
     
-    # Total json used = done + wrong_pass + login_failed + manage
     json_used = done + wrong_pass + login_failed + manage
 
     return (
@@ -60,11 +82,10 @@ def build_message(worker, stats):
 def home():
     return "Admin & Worker Control API is Live!"
 
-# Heartbeat Ping endpoint
 @app.route('/ping', methods=['POST'])
 def ping():
     data = request.json or {}
-    worker = data.get('worker_name', 'Worker1')
+    worker = data.get('worker_name', 'vansh')
 
     if worker not in workers_stats:
         workers_stats[worker] = {
@@ -76,13 +97,12 @@ def ping():
 
     return jsonify({"status": "pong"})
 
-# Event update handler
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
     
     event_type = data.get('event', '')
-    worker = data.get('worker_name', 'Worker1')
+    worker = data.get('worker_name', 'vansh')
     status = data.get('status', 'done')
     
     total_assigned = data.get('total_assigned', None)
@@ -102,7 +122,6 @@ def handle_event():
     if taken_val is not None:
         stats["taken"] = taken_val
 
-    # Jab bhi nayi mail pick hogi (emailcreated), taken count badhega
     if event_type == 'emailcreated':
         stats["taken"] += 1
     elif event_type == 'emailused':
@@ -116,10 +135,9 @@ def handle_event():
             stats["done"] += 1
 
     msg = build_message(worker, stats)
-    send_telegram_msg(ADMIN_CHAT_ID, msg)
+    send_or_edit_telegram_msg(worker, msg)
     return jsonify({"status": "success"})
 
-# Telegram Webhook endpoint (/stats, /reset)
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
     update = request.json or {}
@@ -132,17 +150,25 @@ def telegram_webhook():
 
     if text in ['/stats', '/start']:
         if not workers_stats:
-            send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "⚠️ System Active! Abhi kisi worker ka data nahi hai.",
+                "parse_mode": "HTML"
+            })
             return jsonify({"status": "ok"})
 
-        report = []
         for w_name, s in workers_stats.items():
-            report.append(build_message(w_name, s))
-        send_telegram_msg(chat_id, "\n\n".join(report))
+            msg = build_message(w_name, s)
+            send_or_edit_telegram_msg(w_name, msg)
 
     elif text in ['/reset', '/clean']:
         workers_stats.clear()
-        send_telegram_msg(chat_id, "🧹 Sabhi workers ke stats clear (0) kar diye gaye hain.")
+        worker_messages.clear()
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": "🧹 Sabhi workers ke stats clear kar diye gaye hain.",
+            "parse_mode": "HTML"
+        })
 
     return jsonify({"status": "ok"})
 
