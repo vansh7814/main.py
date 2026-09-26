@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
-ADMIN_CHAT_ID = "8854743478"
+ADMIN_CHAT_ID = "5831204930"
 
 # In-Memory Storage
 workers_stats = {}
