@@ -9,10 +9,29 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
 ADMIN_CHAT_ID = "5831204930"
 
-# In-Memory Storage
-workers_stats = {}
-worker_messages = {}
+DB_FILE = 'workers_data.json'
+MSG_TRACKER_FILE = 'message_ids.json'
 admin_selections = {}
+
+# Helper: Load & Save Database
+def load_json(path):
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_json(path, data):
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving {path}: {e}")
+
+workers_stats = load_json(DB_FILE)
+worker_messages = load_json(MSG_TRACKER_FILE)
 
 def send_telegram_msg(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -41,9 +60,11 @@ def edit_telegram_msg(chat_id, message_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(url, json=payload, timeout=8)
+        res = requests.post(url, json=payload, timeout=8).json()
+        return res.get("ok", False)
     except Exception as e:
         print(f"Telegram Edit Error: {e}")
+        return False
 
 def is_worker_online(worker_name):
     if worker_name not in workers_stats:
@@ -97,6 +118,9 @@ def generate_checklist_keyboard(action, selected_workers):
 def home():
     return "Admin & Worker Control API is Live!"
 
+# ==========================================
+# 1. SILENT PING / HEARTBEAT
+# ==========================================
 @app.route('/ping', methods=['POST'])
 def ping():
     data = request.json or {}
@@ -114,8 +138,12 @@ def ping():
         if user_id != 'N/A':
             workers_stats[worker]["user_id"] = user_id
 
+    save_json(DB_FILE, workers_stats)
     return jsonify({"status": "pong"})
 
+# ==========================================
+# 2. SILENT EVENT LISTENER (NO TELEGRAM SPAM)
+# ==========================================
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
@@ -156,18 +184,24 @@ def handle_event():
         else:
             stats["done"] += 1
 
-    msg = build_message(worker, stats)
-    send_telegram_msg(ADMIN_CHAT_ID, msg)
+    save_json(DB_FILE, workers_stats)
+    
+    # Agar screen par purana status message already khula hua hai, toh chup-chaap use update kar dega (bina naya notification bajaye)
+    msg_id = worker_messages.get(worker)
+    if msg_id:
+        msg = build_message(worker, stats)
+        edit_telegram_msg(ADMIN_CHAT_ID, msg_id, msg)
+
     return jsonify({"status": "success"})
 
 # ==========================================
-# TELEGRAM BOT WEBHOOK (BUTTONS & CALLBACKS)
+# 3. TELEGRAM BOT MENU HANDLER
 # ==========================================
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
     update = request.json or {}
     
-    # 1. CALLBACK QUERIES
+    # CALLBACK QUERIES (Checklist & Confirmation Buttons)
     if "callback_query" in update:
         query = update["callback_query"]
         cb_id = query["id"]
@@ -176,7 +210,6 @@ def telegram_webhook():
         cb_data = query.get("data", "")
 
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id})
-
         session = admin_selections.get(chat_id, {"action": "", "selected": set()})
 
         if cb_data.startswith("toggle_"):
@@ -233,7 +266,7 @@ def telegram_webhook():
 
         return jsonify({"status": "ok"})
 
-    # 2. MESSAGE COMMANDS
+    # MENU TEXT COMMANDS
     message = update.get('message', {})
     chat_id = str(message.get('chat', {}).get('id', ''))
     raw_text = message.get('text', '').strip()
@@ -242,16 +275,26 @@ def telegram_webhook():
     if chat_id != str(ADMIN_CHAT_ID):
         return jsonify({"status": "unauthorized"})
 
-    # STATUS
+    # 📊 STATUS BUTTON: Purana message edit hoga, ya naya bankar save hoga
     if 'status' in text:
         if not workers_stats:
             send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
         else:
             for w_name, s in workers_stats.items():
                 msg = build_message(w_name, s)
-                send_telegram_msg(chat_id, msg)
+                old_msg_id = worker_messages.get(w_name)
+                
+                edited = False
+                if old_msg_id:
+                    edited = edit_telegram_msg(chat_id, old_msg_id, msg)
+                
+                if not edited:
+                    new_id = send_telegram_msg(chat_id, msg)
+                    if new_id:
+                        worker_messages[w_name] = new_id
+                        save_json(MSG_TRACKER_FILE, worker_messages)
 
-    # ONLINE
+    # 🟢 ONLINE
     elif 'online' in text:
         online_list = [f"{w_name} 🟢 Online" for w_name in workers_stats.keys() if is_worker_online(w_name)]
         if online_list:
@@ -259,7 +302,7 @@ def telegram_webhook():
         else:
             send_telegram_msg(chat_id, "⚠️ Abhi koi bhi worker online nahi hai.")
 
-    # OFFLINE
+    # 🔴 OFFLINE
     elif 'offline' in text:
         offline_list = [f"{w_name} 🛑 offline" for w_name in workers_stats.keys() if not is_worker_online(w_name)]
         if offline_list:
@@ -267,7 +310,7 @@ def telegram_webhook():
         else:
             send_telegram_msg(chat_id, "✅ Sabhi workers online hain!")
 
-    # CLEAR RDP
+    # 🧹 CLEAR RDP
     elif 'clear rdp' in text:
         admin_selections[chat_id] = {"action": "clean", "selected": set()}
         online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
@@ -277,7 +320,7 @@ def telegram_webhook():
             kb = generate_checklist_keyboard("clean", set())
             send_telegram_msg(chat_id, "<b>🧹 Clean RDP Workers Select Karein:</b>", kb)
 
-    # STOP WORK
+    # 🛑 STOP WORK
     elif 'stop work' in text:
         admin_selections[chat_id] = {"action": "stop", "selected": set()}
         online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
@@ -286,10 +329,6 @@ def telegram_webhook():
         else:
             kb = generate_checklist_keyboard("stop", set())
             send_telegram_msg(chat_id, "<b>🛑 Stop Work Workers Select Karein:</b>", kb)
-
-    # START / FALLBACK
-    elif '/start' in text:
-        send_telegram_msg(chat_id, "✅ <b>Bot Active Hai!</b> Neeche diye menu se options select karein.")
 
     return jsonify({"status": "ok"})
 
