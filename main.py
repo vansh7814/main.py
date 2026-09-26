@@ -12,9 +12,6 @@ ADMIN_CHAT_ID = "5831204930"
 # In-Memory Storage
 workers_stats = {}
 worker_messages = {}
-
-# Session selections for Checklist
-# Structure: { "admin_chat_id": { "action": "clean|stop", "selected": set() } }
 admin_selections = {}
 
 def send_telegram_msg(chat_id, text, reply_markup=None):
@@ -27,7 +24,7 @@ def send_telegram_msg(chat_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        res = requests.post(url, json=payload, timeout=5).json()
+        res = requests.post(url, json=payload, timeout=8).json()
         return res.get("result", {}).get("message_id")
     except Exception as e:
         print(f"Telegram Send Error: {e}")
@@ -44,7 +41,7 @@ def edit_telegram_msg(chat_id, message_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(url, json=payload, timeout=5)
+        requests.post(url, json=payload, timeout=8)
     except Exception as e:
         print(f"Telegram Edit Error: {e}")
 
@@ -170,7 +167,7 @@ def handle_event():
 def telegram_webhook():
     update = request.json or {}
     
-    # 1. HANDLE INLINE BUTTON CLICKS (CALLBACK QUERIES)
+    # 1. CALLBACK QUERIES
     if "callback_query" in update:
         query = update["callback_query"]
         cb_id = query["id"]
@@ -178,12 +175,10 @@ def telegram_webhook():
         msg_id = query["message"]["message_id"]
         cb_data = query.get("data", "")
 
-        # Acknowledge callback to stop loader
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id})
 
         session = admin_selections.get(chat_id, {"action": "", "selected": set()})
 
-        # CHECKBOX TOGGLE
         if cb_data.startswith("toggle_"):
             parts = cb_data.split("_")
             action = parts[1]
@@ -200,7 +195,6 @@ def telegram_webhook():
             title = "<b>🧹 Clean RDP Workers Select Karein:</b>" if action == "clean" else "<b>🛑 Stop Work Workers Select Karein:</b>"
             edit_telegram_msg(chat_id, msg_id, title, kb)
 
-        # CONFIRMATION PROMPT FOR CLEAN
         elif cb_data in ["confirm_clean_all", "confirm_clean_sel"]:
             if cb_data == "confirm_clean_all":
                 session["selected"] = set([w for w in workers_stats.keys() if is_worker_online(w)])
@@ -216,17 +210,14 @@ def telegram_webhook():
             }
             edit_telegram_msg(chat_id, msg_id, "aaji sub clean kar raha hu", confirm_kb)
 
-        # EXECUTE CLEAN
         elif cb_data == "exec_clean":
             edit_telegram_msg(chat_id, msg_id, "sub clean kar diya hai")
             admin_selections.pop(chat_id, None)
 
-        # CANCEL CLEAN
         elif cb_data == "cancel_clean":
             edit_telegram_msg(chat_id, msg_id, "cancel kar diya hai kuch delete nhi hua")
             admin_selections.pop(chat_id, None)
 
-        # EXECUTE STOP WORK
         elif cb_data in ["stop_all", "stop_sel"]:
             if cb_data == "stop_all":
                 target_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
@@ -242,16 +233,17 @@ def telegram_webhook():
 
         return jsonify({"status": "ok"})
 
-    # 2. HANDLE TEXT MENU COMMANDS
+    # 2. MESSAGE COMMANDS
     message = update.get('message', {})
     chat_id = str(message.get('chat', {}).get('id', ''))
-    text = message.get('text', '').strip()
+    raw_text = message.get('text', '').strip()
+    text = raw_text.lower()
 
     if chat_id != str(ADMIN_CHAT_ID):
         return jsonify({"status": "unauthorized"})
 
-    # MENU: 📊 Status
-    if 'status' in text.lower() or text == '/stats':
+    # STATUS
+    if 'status' in text:
         if not workers_stats:
             send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
         else:
@@ -259,24 +251,24 @@ def telegram_webhook():
                 msg = build_message(w_name, s)
                 send_telegram_msg(chat_id, msg)
 
-    # MENU: 🟢 Online
-    elif 'online' in text.lower():
+    # ONLINE
+    elif 'online' in text:
         online_list = [f"{w_name} 🟢 Online" for w_name in workers_stats.keys() if is_worker_online(w_name)]
         if online_list:
             send_telegram_msg(chat_id, "\n".join(online_list))
         else:
             send_telegram_msg(chat_id, "⚠️ Abhi koi bhi worker online nahi hai.")
 
-    # MENU: 🔴 Offline
-    elif 'offline' in text.lower():
+    # OFFLINE
+    elif 'offline' in text:
         offline_list = [f"{w_name} 🛑 offline" for w_name in workers_stats.keys() if not is_worker_online(w_name)]
         if offline_list:
             send_telegram_msg(chat_id, "\n".join(offline_list))
         else:
             send_telegram_msg(chat_id, "✅ Sabhi workers online hain!")
 
-    # MENU: 🧹 Clear RDP
-    elif 'clear rdp' in text.lower():
+    # CLEAR RDP
+    elif 'clear rdp' in text:
         admin_selections[chat_id] = {"action": "clean", "selected": set()}
         online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
         if not online_workers:
@@ -285,8 +277,8 @@ def telegram_webhook():
             kb = generate_checklist_keyboard("clean", set())
             send_telegram_msg(chat_id, "<b>🧹 Clean RDP Workers Select Karein:</b>", kb)
 
-    # MENU: 🛑 Stop Work
-    elif 'stop work' in text.lower():
+    # STOP WORK
+    elif 'stop work' in text:
         admin_selections[chat_id] = {"action": "stop", "selected": set()}
         online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
         if not online_workers:
@@ -294,6 +286,10 @@ def telegram_webhook():
         else:
             kb = generate_checklist_keyboard("stop", set())
             send_telegram_msg(chat_id, "<b>🛑 Stop Work Workers Select Karein:</b>", kb)
+
+    # START / FALLBACK
+    elif '/start' in text:
+        send_telegram_msg(chat_id, "✅ <b>Bot Active Hai!</b> Neeche diye menu se options select karein.")
 
     return jsonify({"status": "ok"})
 
