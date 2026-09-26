@@ -76,27 +76,21 @@ def get_watcher_status(worker_name):
 
 def build_message(worker, stats):
     watcher_status = get_watcher_status(worker)
-    user_id = stats.get('user_id', 'N/A')
     done = stats.get('done', 0)
     wrong_pass = stats.get('wrong_pass', 0)
     login_failed = stats.get('login_failed', 0)
     manage = stats.get('manage', 0)
     total_assigned = stats.get('total_assigned', 0)
     taken = stats.get('taken', 0)
-    is_paused = stats.get('is_paused', False)
     json_used = done + wrong_pass + login_failed + manage
 
-    id_part = f" (ID: {user_id})" if user_id != 'N/A' else ""
-    work_state = "⏸️ Paused" if is_paused else "▶️ Working"
-    
     return (
-        f"<b>Stats for {worker}{id_part} |📦 X-Data {done}/{total_assigned}</b>\n"
-        f"<b>Status :</b> <code>{watcher_status}</code> ({work_state})\n\n"
+        f"<b>Stats for {worker} |📦 X-Data {done}/{total_assigned}</b>\n"
+        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
         f"✅ <b>json used : {json_used}</b> | 📧<b>{taken} taken</b> | ❌ <b>Wrong Pass:</b> {wrong_pass} | ⚠️ <b>Login Failed:</b> {login_failed} | 🛠️ <b>Manage:</b> {manage}"
     )
 
 def generate_checklist_keyboard(action, selected_workers):
-    # Online workers fetch
     online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
     keyboard = []
     
@@ -137,11 +131,9 @@ def worker_status_check(worker_name):
 def ping():
     data = request.json or {}
     worker = data.get('worker_name', 'vansh')
-    user_id = data.get('user_id', 'N/A')
 
     if worker not in workers_stats:
         workers_stats[worker] = {
-            "user_id": user_id,
             "done": 0, "login_failed": 0, "wrong_pass": 0,
             "manage": 0, "taken": 0, "total_assigned": 0,
             "is_paused": False,
@@ -149,8 +141,6 @@ def ping():
         }
     else:
         workers_stats[worker]["last_seen"] = time.time()
-        if user_id != 'N/A':
-            workers_stats[worker]["user_id"] = user_id
 
     save_json(DB_FILE, workers_stats)
     return jsonify({"status": "pong"})
@@ -160,7 +150,6 @@ def handle_event():
     data = request.json or {}
     event_type = data.get('event', '')
     worker = data.get('worker_name', 'vansh')
-    user_id = data.get('user_id', None)
     status = data.get('status', 'done')
     
     total_assigned = data.get('total_assigned', None)
@@ -168,7 +157,6 @@ def handle_event():
 
     if worker not in workers_stats:
         workers_stats[worker] = {
-            "user_id": user_id if user_id else 'N/A',
             "done": 0, "login_failed": 0, "wrong_pass": 0,
             "manage": 0, "taken": 0, "total_assigned": 0,
             "is_paused": False,
@@ -178,8 +166,6 @@ def handle_event():
     stats = workers_stats[worker]
     stats["last_seen"] = time.time()
 
-    if user_id:
-        stats["user_id"] = user_id
     if total_assigned is not None:
         stats["total_assigned"] = total_assigned
     if taken_val is not None:
@@ -199,7 +185,7 @@ def handle_event():
 
     save_json(DB_FILE, workers_stats)
     
-    # Silent update to previous opened status message (No spam notifications)
+    # Silent update to previously opened status message (No spam notifications)
     msg_id = worker_messages.get(worker)
     if msg_id:
         msg = build_message(worker, stats)
