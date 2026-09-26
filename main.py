@@ -13,7 +13,6 @@ DB_FILE = 'workers_data.json'
 MSG_TRACKER_FILE = 'message_ids.json'
 admin_selections = {}
 
-# Helper: Load & Save Database
 def load_json(path):
     if os.path.exists(path):
         try:
@@ -84,16 +83,20 @@ def build_message(worker, stats):
     manage = stats.get('manage', 0)
     total_assigned = stats.get('total_assigned', 0)
     taken = stats.get('taken', 0)
+    is_paused = stats.get('is_paused', False)
     json_used = done + wrong_pass + login_failed + manage
 
     id_part = f" (ID: {user_id})" if user_id != 'N/A' else ""
+    work_state = "⏸️ Paused" if is_paused else "▶️ Working"
+    
     return (
         f"<b>Stats for {worker}{id_part} |📦 X-Data {done}/{total_assigned}</b>\n"
-        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
+        f"<b>Status :</b> <code>{watcher_status}</code> ({work_state})\n\n"
         f"✅ <b>json used : {json_used}</b> | 📧<b>{taken} taken</b> | ❌ <b>Wrong Pass:</b> {wrong_pass} | ⚠️ <b>Login Failed:</b> {login_failed} | 🛠️ <b>Manage:</b> {manage}"
     )
 
 def generate_checklist_keyboard(action, selected_workers):
+    # Online workers fetch
     online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
     keyboard = []
     
@@ -111,6 +114,11 @@ def generate_checklist_keyboard(action, selected_workers):
             {"text": "🛑 ALL", "callback_data": "stop_all"},
             {"text": "🛑 Stop Work", "callback_data": "stop_sel"}
         ])
+    elif action == "cont":
+        keyboard.append([
+            {"text": "🟢 Resume ALL", "callback_data": "cont_all"},
+            {"text": "🟢 Cont. Work", "callback_data": "cont_sel"}
+        ])
 
     return {"inline_keyboard": keyboard}
 
@@ -118,9 +126,13 @@ def generate_checklist_keyboard(action, selected_workers):
 def home():
     return "Admin & Worker Control API is Live!"
 
-# ==========================================
-# 1. SILENT PING / HEARTBEAT
-# ==========================================
+# Worker checks if their work is paused or active
+@app.route('/worker-status/<worker_name>', methods=['GET'])
+def worker_status_check(worker_name):
+    if worker_name in workers_stats:
+        return jsonify({"is_paused": workers_stats[worker_name].get("is_paused", False)})
+    return jsonify({"is_paused": False})
+
 @app.route('/ping', methods=['POST'])
 def ping():
     data = request.json or {}
@@ -131,7 +143,9 @@ def ping():
         workers_stats[worker] = {
             "user_id": user_id,
             "done": 0, "login_failed": 0, "wrong_pass": 0,
-            "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": time.time()
+            "manage": 0, "taken": 0, "total_assigned": 0,
+            "is_paused": False,
+            "last_seen": time.time()
         }
     else:
         workers_stats[worker]["last_seen"] = time.time()
@@ -141,9 +155,6 @@ def ping():
     save_json(DB_FILE, workers_stats)
     return jsonify({"status": "pong"})
 
-# ==========================================
-# 2. SILENT EVENT LISTENER (NO TELEGRAM SPAM)
-# ==========================================
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
@@ -159,7 +170,9 @@ def handle_event():
         workers_stats[worker] = {
             "user_id": user_id if user_id else 'N/A',
             "done": 0, "login_failed": 0, "wrong_pass": 0,
-            "manage": 0, "taken": 0, "total_assigned": 0, "last_seen": time.time()
+            "manage": 0, "taken": 0, "total_assigned": 0,
+            "is_paused": False,
+            "last_seen": time.time()
         }
 
     stats = workers_stats[worker]
@@ -186,7 +199,7 @@ def handle_event():
 
     save_json(DB_FILE, workers_stats)
     
-    # Agar screen par purana status message already khula hua hai, toh chup-chaap use update kar dega (bina naya notification bajaye)
+    # Silent update to previous opened status message (No spam notifications)
     msg_id = worker_messages.get(worker)
     if msg_id:
         msg = build_message(worker, stats)
@@ -195,13 +208,13 @@ def handle_event():
     return jsonify({"status": "success"})
 
 # ==========================================
-# 3. TELEGRAM BOT MENU HANDLER
+# TELEGRAM MENU & CALLBACK HANDLERS
 # ==========================================
 @app.route('/telegram-webhook', methods=['POST'])
 def telegram_webhook():
     update = request.json or {}
     
-    # CALLBACK QUERIES (Checklist & Confirmation Buttons)
+    # 1. CALLBACK QUERIES
     if "callback_query" in update:
         query = update["callback_query"]
         cb_id = query["id"]
@@ -212,6 +225,7 @@ def telegram_webhook():
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id})
         session = admin_selections.get(chat_id, {"action": "", "selected": set()})
 
+        # CHECKBOX TOGGLE
         if cb_data.startswith("toggle_"):
             parts = cb_data.split("_")
             action = parts[1]
@@ -225,9 +239,16 @@ def telegram_webhook():
             session["action"] = action
             admin_selections[chat_id] = session
             kb = generate_checklist_keyboard(action, session["selected"])
-            title = "<b>🧹 Clean RDP Workers Select Karein:</b>" if action == "clean" else "<b>🛑 Stop Work Workers Select Karein:</b>"
+            
+            title = "<b>🧹 Clean RDP Workers Select Karein:</b>"
+            if action == "stop":
+                title = "<b>🛑 Stop Work Workers Select Karein:</b>"
+            elif action == "cont":
+                title = "<b>🟢 Continue Work Workers Select Karein:</b>"
+                
             edit_telegram_msg(chat_id, msg_id, title, kb)
 
+        # CLEAN ACTIONS
         elif cb_data in ["confirm_clean_all", "confirm_clean_sel"]:
             if cb_data == "confirm_clean_all":
                 session["selected"] = set([w for w in workers_stats.keys() if is_worker_online(w)])
@@ -251,6 +272,7 @@ def telegram_webhook():
             edit_telegram_msg(chat_id, msg_id, "cancel kar diya hai kuch delete nhi hua")
             admin_selections.pop(chat_id, None)
 
+        # STOP WORK ACTIONS
         elif cb_data in ["stop_all", "stop_sel"]:
             if cb_data == "stop_all":
                 target_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
@@ -258,15 +280,37 @@ def telegram_webhook():
                 target_workers = list(session.get("selected", []))
 
             if target_workers:
+                for w in target_workers:
+                    if w in workers_stats:
+                        workers_stats[w]["is_paused"] = True
+                save_json(DB_FILE, workers_stats)
                 stopped_names = ", ".join(target_workers)
                 edit_telegram_msg(chat_id, msg_id, f"in sabka work stop kar diya hai:\n<b>{stopped_names}</b>")
             else:
                 edit_telegram_msg(chat_id, msg_id, "⚠️ Koi worker select nahi kiya gaya tha.")
             admin_selections.pop(chat_id, None)
 
+        # CONTINUE WORK ACTIONS
+        elif cb_data in ["cont_all", "cont_sel"]:
+            if cb_data == "cont_all":
+                target_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
+            else:
+                target_workers = list(session.get("selected", []))
+
+            if target_workers:
+                for w in target_workers:
+                    if w in workers_stats:
+                        workers_stats[w]["is_paused"] = False
+                save_json(DB_FILE, workers_stats)
+                resumed_names = ", ".join(target_workers)
+                edit_telegram_msg(chat_id, msg_id, f"in sabka work continue/resume kar diya hai:\n<b>{resumed_names}</b>")
+            else:
+                edit_telegram_msg(chat_id, msg_id, "⚠️ Koi worker select nahi kiya gaya tha.")
+            admin_selections.pop(chat_id, None)
+
         return jsonify({"status": "ok"})
 
-    # MENU TEXT COMMANDS
+    # 2. MESSAGE TEXT COMMANDS
     message = update.get('message', {})
     chat_id = str(message.get('chat', {}).get('id', ''))
     raw_text = message.get('text', '').strip()
@@ -275,7 +319,7 @@ def telegram_webhook():
     if chat_id != str(ADMIN_CHAT_ID):
         return jsonify({"status": "unauthorized"})
 
-    # 📊 STATUS BUTTON: Purana message edit hoga, ya naya bankar save hoga
+    # 📊 STATUS BUTTON
     if 'status' in text:
         if not workers_stats:
             send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
@@ -329,6 +373,16 @@ def telegram_webhook():
         else:
             kb = generate_checklist_keyboard("stop", set())
             send_telegram_msg(chat_id, "<b>🛑 Stop Work Workers Select Karein:</b>", kb)
+
+    # 🟢 CONT. WORK (Resume)
+    elif 'cont' in text or 'continue' in text:
+        admin_selections[chat_id] = {"action": "cont", "selected": set()}
+        online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
+        if not online_workers:
+            send_telegram_msg(chat_id, "⚠️ Abhi koi online worker nahi hai jiska work continue kiya ja sake.")
+        else:
+            kb = generate_checklist_keyboard("cont", set())
+            send_telegram_msg(chat_id, "<b>🟢 Continue Work Workers Select Karein:</b>", kb)
 
     return jsonify({"status": "ok"})
 
