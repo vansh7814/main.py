@@ -12,13 +12,13 @@ ADMIN_CHAT_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# Active data store
+# State data aur card ID tracker
 DATA = {
     "workers": {
         "vansh": {
             "mode": "Online 🟢",
-            "data_type": "X",      # Data type: X, A, M, T etc.
-            "allotted": 0,         # Allotted count
+            "data_type": "X",
+            "allotted": 0,
             "taken": 0,
             "done": 0,
             "login_failed": 0,
@@ -26,7 +26,7 @@ DATA = {
             "manage": 0
         }
     },
-    "last_card_msg_id": None
+    "active_card_msg_id": None
 }
 
 def get_admin_keyboard():
@@ -50,8 +50,6 @@ def format_all_workers_card():
         failed = stats.get("login_failed", 0)
         wrong = stats.get("wrong_pass", 0)
         manage = stats.get("manage", 0)
-        
-        # Used Json ka total sum
         used_total = done + failed + wrong + manage
 
         card = (
@@ -70,17 +68,29 @@ def format_all_workers_card():
 
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
-def update_or_send_card(force_new=False):
-    text = format_all_workers_card()
-    msg_id = DATA.get("last_card_msg_id")
+def silent_auto_edit_card():
+    """Worker event ke waqt sirf exist karne wale card ko bina kisi awaz ke edit karega."""
+    msg_id = DATA.get("active_card_msg_id")
+    if not msg_id:
+        return  # Agar card active nahi hai toh bilkul naya message send nahi karega
 
-    if msg_id and not force_new:
+    text = format_all_workers_card()
+    try:
+        bot.edit_message_text(text, chat_id=ADMIN_CHAT_ID, message_id=msg_id, parse_mode="HTML")
+    except Exception:
+        # Text same hone par Telegram error ignore karein
+        pass
+
+def show_single_fresh_card():
+    """Purane message ko delete karke ek hi fresh card banata hai."""
+    old_msg_id = DATA.get("active_card_msg_id")
+    if old_msg_id:
         try:
-            bot.edit_message_text(text, chat_id=ADMIN_CHAT_ID, message_id=msg_id, parse_mode="HTML")
-            return
+            bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=old_msg_id)
         except Exception:
             pass
 
+    text = format_all_workers_card()
     try:
         sent = bot.send_message(
             ADMIN_CHAT_ID,
@@ -89,23 +99,21 @@ def update_or_send_card(force_new=False):
             reply_markup=get_admin_keyboard(),
             disable_notification=True
         )
-        DATA["last_card_msg_id"] = sent.message_id
+        DATA["active_card_msg_id"] = sent.message_id
     except Exception as e:
-        print(f"Error sending card: {e}")
+        print(f"Card error: {e}")
 
 @app.route('/')
 def home():
     return "Admin API Live!"
 
-# Email Bot se event data aane par
+# Email Bot Event: 100% Silent Background Edit
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
     worker = str(data.get("worker_name", "vansh")).lower()
     event = data.get("event", "")
     status = data.get("status", "")
-    
-    # Email Bot se data_type ya allotted bhi bheja ja sakta hai
     incoming_data_type = data.get("data_type")
     incoming_allotted = data.get("allotted")
 
@@ -121,7 +129,6 @@ def handle_event():
             "manage": 0
         }
 
-    # Data Type / Allotted update agar payload me aaya ho
     if incoming_data_type:
         DATA["workers"][worker]["data_type"] = incoming_data_type
     if incoming_allotted is not None:
@@ -141,73 +148,67 @@ def handle_event():
 
     DATA["workers"][worker]["mode"] = "Online 🟢"
 
-    # Silent Auto-Refresh Live Card
-    update_or_send_card(force_new=False)
+    # Wahi ek card silently live update hoga
+    silent_auto_edit_card()
     return jsonify({"success": True}), 200
 
-# Watcher Bot connection endpoint
+# Watcher Bot Endpoint
 @app.route('/watcher_update', methods=['POST'])
 def watcher_update():
     data = request.json or {}
     worker = str(data.get("worker", "vansh")).lower()
     status = data.get("status", "Online 🟢")
 
-    if worker not in DATA["workers"]:
-        DATA["workers"][worker] = {
-            "mode": status,
-            "data_type": "X",
-            "allotted": 0,
-            "taken": 0, "done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0
-        }
-    else:
+    if worker in DATA["workers"]:
         DATA["workers"][worker]["mode"] = status
-
-    update_or_send_card(force_new=False)
+    
+    silent_auto_edit_card()
     return jsonify({"success": True}), 200
 
-# --- Telegram Commands ---
+# --- Telegram User Actions ---
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    update_or_send_card(force_new=True)
+    show_single_fresh_card()
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
     text = message.text.strip()
     worker = "vansh"
 
+    # Status dabane par purana card hata kar single fresh card banega
     if "Status" in text:
-        update_or_send_card(force_new=True)
+        show_single_fresh_card()
 
     elif "Online" in text:
         if worker in DATA["workers"]:
             DATA["workers"][worker]["mode"] = "Online 🟢"
-        bot.send_message(ADMIN_CHAT_ID, f"🟢 <b>Status Check:</b>\nWorker <code>{worker}</code> marked <b>ONLINE</b>.", parse_mode="HTML")
-        update_or_send_card(force_new=False)
+        bot.send_message(ADMIN_CHAT_ID, f"🟢 Worker <code>{worker}</code>: <b>ONLINE</b>", parse_mode="HTML")
+        silent_auto_edit_card()
 
     elif "Offline" in text:
         if worker in DATA["workers"]:
             DATA["workers"][worker]["mode"] = "Offline 🔴"
-        bot.send_message(ADMIN_CHAT_ID, f"🔴 <b>Status Check:</b>\nWorker <code>{worker}</code> marked <b>OFFLINE</b>.", parse_mode="HTML")
-        update_or_send_card(force_new=False)
+        bot.send_message(ADMIN_CHAT_ID, f"🔴 Worker <code>{worker}</code>: <b>OFFLINE</b>", parse_mode="HTML")
+        silent_auto_edit_card()
 
     elif "Cont. Work" in text:
-        bot.send_message(ADMIN_CHAT_ID, "▶️ Worker <b>VANSH</b> work state: <b>Active</b>", parse_mode="HTML")
+        bot.send_message(ADMIN_CHAT_ID, "▶️ <b>VANSH</b>: Work Continued", parse_mode="HTML")
+        silent_auto_edit_card()
 
     elif "Stop Work" in text:
-        bot.send_message(ADMIN_CHAT_ID, "⏸️ Worker <b>VANSH</b> work state: <b>Stopped</b>", parse_mode="HTML")
+        bot.send_message(ADMIN_CHAT_ID, "⏸️ <b>VANSH</b>: Work Stopped", parse_mode="HTML")
+        silent_auto_edit_card()
 
     elif "Clean RDP" in text:
-        bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean signal issued for Vansh.</b>", parse_mode="HTML")
+        bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
 
 def start_polling():
     try:
         bot.remove_webhook()
         time.sleep(1)
-    except Exception as e:
-        print(f"Webhook remove warning: {e}")
-
-    print("Admin Bot Telegram Polling Active...")
+    except Exception:
+        pass
     bot.infinity_polling(skip_pending=True)
 
 if __name__ == '__main__':
