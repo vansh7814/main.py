@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-ADMIN_BOT_TOKEN = "8351462114:AAER7HhrRJcYnvAj19CedKIkRK3ezuwvM-s"
+ADMIN_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
 ADMIN_CHAT_ID = 5831204930
 
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
