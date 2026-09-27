@@ -13,6 +13,7 @@ bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
 STATE_FILE = "state.json"
+edit_lock = threading.Lock()
 
 def get_state():
     default_state = {
@@ -84,42 +85,43 @@ def format_all_workers_card(workers):
 
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
-def update_or_create_card(force_new=False):
-    state = get_state()
-    text = format_all_workers_card(state["workers"])
-    msg_id = state.get("msg_id")
+def live_inplace_refresh():
+    """Video 2 ki tarah ek hi card ko smoothly live edit karega."""
+    with edit_lock:
+        state = get_state()
+        text = format_all_workers_card(state["workers"])
+        msg_id = state.get("msg_id")
 
-    # Agar naya card nahi mangwaya aur purana card hai, toh direct edit karein
-    if msg_id and not force_new:
-        try:
-            bot.edit_message_text(text, chat_id=ADMIN_CHAT_ID, message_id=msg_id, parse_mode="HTML")
-            return
-        except telebot.apihelper.ApiTelegramException as e:
-            if "message is not modified" in str(e).lower():
+        if msg_id:
+            try:
+                bot.edit_message_text(
+                    text,
+                    chat_id=ADMIN_CHAT_ID,
+                    message_id=msg_id,
+                    parse_mode="HTML"
+                )
                 return
-            print(f"Edit failed, creating fresh card: {e}")
-        except Exception as e:
-            print(f"Edit error: {e}")
+            except telebot.apihelper.ApiTelegramException as e:
+                # Agar text change nahi hua toh error skip karein
+                if "message is not modified" in str(e).lower():
+                    return
+                print(f"Edit warning: {e}")
+            except Exception as e:
+                print(f"Edit general error: {e}")
 
-    # Purana message delete karke fresh send karein (agar force_new ho)
-    if msg_id:
+        # Agar msg_id exist nahi karta (pehli baar ke liye), tabhi new message bheje
         try:
-            bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=msg_id)
-        except Exception:
-            pass
-
-    try:
-        sent = bot.send_message(
-            ADMIN_CHAT_ID,
-            text,
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard(),
-            disable_notification=True
-        )
-        state["msg_id"] = sent.message_id
-        save_state(state)
-    except Exception as e:
-        print(f"Send error: {e}")
+            sent = bot.send_message(
+                ADMIN_CHAT_ID,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard(),
+                disable_notification=True
+            )
+            state["msg_id"] = sent.message_id
+            save_state(state)
+        except Exception as e:
+            print(f"Send initial card error: {e}")
 
 @app.route('/')
 def home():
@@ -168,8 +170,8 @@ def handle_event():
     state["workers"][worker]["mode"] = "Online 🟢"
     save_state(state)
 
-    # Turant existing card edit hoga
-    update_or_create_card(force_new=False)
+    # In-place silent live refresh bina kisi new message ke
+    live_inplace_refresh()
     return jsonify({"success": True}), 200
 
 # Watcher Bot Endpoint
@@ -183,7 +185,7 @@ def watcher_update():
     if worker in state["workers"]:
         state["workers"][worker]["mode"] = status
         save_state(state)
-        update_or_create_card(force_new=False)
+        live_inplace_refresh()
 
     return jsonify({"success": True}), 200
 
@@ -191,7 +193,7 @@ def watcher_update():
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    update_or_create_card(force_new=True)
+    live_inplace_refresh()
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -199,30 +201,27 @@ def handle_menu_actions(message):
     worker = "vansh"
     state = get_state()
 
+    # Status dabane par naya card nahi banega, wahi current card live refresh hoga
     if "Status" in text:
-        update_or_create_card(force_new=True)
+        live_inplace_refresh()
 
     elif "Online" in text:
         if worker in state["workers"]:
             state["workers"][worker]["mode"] = "Online 🟢"
             save_state(state)
-        bot.send_message(ADMIN_CHAT_ID, f"🟢 Worker <code>{worker}</code>: <b>ONLINE</b>", parse_mode="HTML")
-        update_or_create_card(force_new=False)
+        live_inplace_refresh()
 
     elif "Offline" in text:
         if worker in state["workers"]:
             state["workers"][worker]["mode"] = "Offline 🔴"
             save_state(state)
-        bot.send_message(ADMIN_CHAT_ID, f"🔴 Worker <code>{worker}</code>: <b>OFFLINE</b>", parse_mode="HTML")
-        update_or_create_card(force_new=False)
+        live_inplace_refresh()
 
     elif "Cont. Work" in text:
-        bot.send_message(ADMIN_CHAT_ID, "▶️ <b>VANSH</b>: Work Continued", parse_mode="HTML")
-        update_or_create_card(force_new=False)
+        live_inplace_refresh()
 
     elif "Stop Work" in text:
-        bot.send_message(ADMIN_CHAT_ID, "⏸️ <b>VANSH</b>: Work Stopped", parse_mode="HTML")
-        update_or_create_card(force_new=False)
+        live_inplace_refresh()
 
     elif "Clean RDP" in text:
         bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
