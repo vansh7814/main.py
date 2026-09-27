@@ -1,377 +1,236 @@
-import os
 import json
+import os
 import time
-import requests
+import threading
 from flask import Flask, request, jsonify
+import telebot
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
+ADMIN_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
+ADMIN_CHAT_ID = 5831204930
+
+bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
-ADMIN_CHAT_ID = "5831204930"
-
-DB_FILE = 'workers_data.json'
-MSG_TRACKER_FILE = 'message_ids.json'
-admin_selections = {}
-
-def load_json(path):
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-def save_json(path, data):
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"Error saving {path}: {e}")
-
-workers_stats = load_json(DB_FILE)
-worker_messages = load_json(MSG_TRACKER_FILE)
-
-def send_telegram_msg(chat_id, text, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": str(chat_id),
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
-    try:
-        res = requests.post(url, json=payload, timeout=8).json()
-        return res.get("result", {}).get("message_id")
-    except Exception as e:
-        print(f"Telegram Send Error: {e}")
-        return None
-
-def edit_telegram_msg(chat_id, message_id, text, reply_markup=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
-    payload = {
-        "chat_id": str(chat_id),
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
-    try:
-        res = requests.post(url, json=payload, timeout=8).json()
-        return res.get("ok", False)
-    except Exception as e:
-        print(f"Telegram Edit Error: {e}")
-        return False
-
-def is_worker_online(worker_name):
-    if worker_name not in workers_stats:
-        return False
-    last_seen = workers_stats[worker_name].get("last_seen", 0)
-    return (time.time() - last_seen <= 65)
-
-def get_watcher_status(worker_name):
-    return "Watcher ON" if is_worker_online(worker_name) else "Watcher OFF"
-
-def build_message(worker, stats):
-    watcher_status = get_watcher_status(worker)
-    done = stats.get('done', 0)
-    wrong_pass = stats.get('wrong_pass', 0)
-    login_failed = stats.get('login_failed', 0)
-    manage = stats.get('manage', 0)
-    total_assigned = stats.get('total_assigned', 0)
-    taken = stats.get('taken', 0)
-    json_used = done + wrong_pass + login_failed + manage
-
-    return (
-        f"<b>Stats for {worker} |📦 X-Data {done}/{total_assigned}</b>\n"
-        f"<b>Status :</b> <code>{watcher_status}</code>\n\n"
-        f"✅ <b>json used : {json_used}</b> | 📧<b>{taken} taken</b> | ❌ <b>Wrong Pass:</b> {wrong_pass} | ⚠️ <b>Login Failed:</b> {login_failed} | 🛠️ <b>Manage:</b> {manage}"
-    )
-
-def generate_checklist_keyboard(action, selected_workers):
-    online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-    keyboard = []
-    
-    for w in online_workers:
-        mark = "☑️" if w in selected_workers else "☐"
-        keyboard.append([{"text": f"{w} {mark}", "callback_data": f"toggle_{action}_{w}"}])
-
-    if action == "clean":
-        keyboard.append([
-            {"text": "🧹 Clean ALL", "callback_data": "confirm_clean_all"},
-            {"text": "🧹 Clean", "callback_data": "confirm_clean_sel"}
-        ])
-    elif action == "stop":
-        keyboard.append([
-            {"text": "🛑 ALL", "callback_data": "stop_all"},
-            {"text": "🛑 Stop Work", "callback_data": "stop_sel"}
-        ])
-    elif action == "cont":
-        keyboard.append([
-            {"text": "🟢 Resume ALL", "callback_data": "cont_all"},
-            {"text": "🟢 Cont. Work", "callback_data": "cont_sel"}
-        ])
-
-    return {"inline_keyboard": keyboard}
-
-@app.route('/', methods=['GET'])
-def home():
-    return "Admin & Worker Control API is Live!"
-
-# Worker checks if their work is paused or active
-@app.route('/worker-status/<worker_name>', methods=['GET'])
-def worker_status_check(worker_name):
-    if worker_name in workers_stats:
-        return jsonify({"is_paused": workers_stats[worker_name].get("is_paused", False)})
-    return jsonify({"is_paused": False})
-
-@app.route('/ping', methods=['POST'])
-def ping():
-    data = request.json or {}
-    worker = data.get('worker_name', 'vansh')
-
-    if worker not in workers_stats:
-        workers_stats[worker] = {
-            "done": 0, "login_failed": 0, "wrong_pass": 0,
-            "manage": 0, "taken": 0, "total_assigned": 0,
-            "is_paused": False,
-            "last_seen": time.time()
+# State data
+DATA = {
+    "msg_id": None,
+    "needs_update": False,
+    "last_text": "",
+    "workers": {
+        "vansh": {
+            "mode": "Online 🟢",
+            "data_type": "X",
+            "allotted": 0,
+            "taken": 0,
+            "done": 0,
+            "login_failed": 0,
+            "wrong_pass": 0,
+            "manage": 0
         }
-    else:
-        workers_stats[worker]["last_seen"] = time.time()
+    }
+}
 
-    save_json(DB_FILE, workers_stats)
-    return jsonify({"status": "pong"})
+def get_admin_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(KeyboardButton("📊 Status"))
+    markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
+    markup.row(KeyboardButton("⏸️ Cont. Work"), KeyboardButton("▶️ Stop Work"))
+    markup.row(KeyboardButton("🧹 Clean RDP"))
+    return markup
 
+def format_all_workers_card():
+    cards = []
+    for worker_name, stats in DATA["workers"].items():
+        data_type = stats.get("data_type", "X")
+        allotted = stats.get("allotted", 0)
+        taken = stats.get("taken", 0)
+        done = stats.get("done", 0)
+        failed = stats.get("login_failed", 0)
+        wrong = stats.get("wrong_pass", 0)
+        manage = stats.get("manage", 0)
+        used_total = done + failed + wrong + manage
+
+        card = (
+            f"📊 <b>Live Monitor — {worker_name.upper()}</b>\n\n"
+            f"🌐 <b>Network:</b> {stats.get('mode', 'Online 🟢')}\n"
+            f"📦 <b>{data_type} allotted:</b> {allotted}\n"
+            f"────────────────────\n"
+            f"📥 <b>Taken:</b> {taken}\n"
+            f"📝 <b>Used Json:</b> {used_total}\n"
+            f"✅ <b>Done:</b> {done}\n"
+            f"❌ <b>Login Failed:</b> {failed}\n"
+            f"🔑 <b>Wrong Pass:</b> {wrong}\n"
+            f"🔧 <b>Manage:</b> {manage}"
+        )
+        cards.append(card)
+
+    return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
+
+def send_fresh_card():
+    """Purane card ko safely delete karega aur bilkul ek naya card banayega."""
+    old_id = DATA["msg_id"]
+    if old_id:
+        try:
+            bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=old_id)
+        except Exception:
+            pass
+
+    text = format_all_workers_card()
+    try:
+        sent = bot.send_message(
+            ADMIN_CHAT_ID,
+            text,
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(),
+            disable_notification=True
+        )
+        DATA["msg_id"] = sent.message_id
+        DATA["last_text"] = text
+        DATA["needs_update"] = False
+    except Exception as e:
+        print(f"Send Error: {e}")
+
+# Video 2 wala smooth real-time update loop
+def smooth_updater_thread():
+    while True:
+        try:
+            if DATA["needs_update"] and DATA["msg_id"]:
+                text = format_all_workers_card()
+                if text != DATA["last_text"]:
+                    try:
+                        bot.edit_message_text(
+                            text,
+                            chat_id=ADMIN_CHAT_ID,
+                            message_id=DATA["msg_id"],
+                            parse_mode="HTML"
+                        )
+                        DATA["last_text"] = text
+                        DATA["needs_update"] = False
+                    except telebot.apihelper.ApiTelegramException as te:
+                        if "message to edit not found" in str(te).lower():
+                            send_fresh_card()
+                        elif "message is not modified" in str(te).lower():
+                            DATA["needs_update"] = False
+                    except Exception as ex:
+                        print(f"Edit warning: {ex}")
+        except Exception as e:
+            print(f"Loop error: {e}")
+        time.sleep(0.5)  # Telegram API smooth rate limit (no freezing, no flood limit)
+
+@app.route('/')
+def home():
+    return "Admin API Live!"
+
+# Email Bot Event
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
-    event_type = data.get('event', '')
-    worker = data.get('worker_name', 'vansh')
-    status = data.get('status', 'done')
-    
-    total_assigned = data.get('total_assigned', None)
-    taken_val = data.get('taken', None)
+    worker = str(data.get("worker_name", "vansh")).lower()
+    event = data.get("event", "")
+    status = data.get("status", "")
+    incoming_data_type = data.get("data_type")
+    incoming_allotted = data.get("allotted")
 
-    if worker not in workers_stats:
-        workers_stats[worker] = {
-            "done": 0, "login_failed": 0, "wrong_pass": 0,
-            "manage": 0, "taken": 0, "total_assigned": 0,
-            "is_paused": False,
-            "last_seen": time.time()
+    if worker not in DATA["workers"]:
+        DATA["workers"][worker] = {
+            "mode": "Online 🟢",
+            "data_type": incoming_data_type or "X",
+            "allotted": incoming_allotted or 0,
+            "taken": 0,
+            "done": 0,
+            "login_failed": 0,
+            "wrong_pass": 0,
+            "manage": 0
         }
 
-    stats = workers_stats[worker]
-    stats["last_seen"] = time.time()
+    if incoming_data_type:
+        DATA["workers"][worker]["data_type"] = incoming_data_type
+    if incoming_allotted is not None:
+        DATA["workers"][worker]["allotted"] = incoming_allotted
 
-    if total_assigned is not None:
-        stats["total_assigned"] = total_assigned
-    if taken_val is not None:
-        stats["taken"] = taken_val
+    if event == "emailcreated":
+        DATA["workers"][worker]["taken"] += 1
+    elif event == "emailused":
+        if status == "done":
+            DATA["workers"][worker]["done"] += 1
+        elif status == "login_failed":
+            DATA["workers"][worker]["login_failed"] += 1
+        elif status == "wrong_pass":
+            DATA["workers"][worker]["wrong_pass"] += 1
+        elif status == "manage":
+            DATA["workers"][worker]["manage"] += 1
 
-    if event_type == 'emailcreated':
-        stats["taken"] += 1
-    elif event_type == 'emailused':
-        if status == 'login_failed':
-            stats["login_failed"] += 1
-        elif status == 'wrong_pass':
-            stats["wrong_pass"] += 1
-        elif status == 'manage':
-            stats["manage"] += 1
-        else:
-            stats["done"] += 1
+    DATA["workers"][worker]["mode"] = "Online 🟢"
 
-    save_json(DB_FILE, workers_stats)
-    
-    # Silent update to previously opened status message (No spam notifications)
-    msg_id = worker_messages.get(worker)
-    if msg_id:
-        msg = build_message(worker, stats)
-        edit_telegram_msg(ADMIN_CHAT_ID, msg_id, msg)
+    if not DATA["msg_id"]:
+        send_fresh_card()
+    else:
+        DATA["needs_update"] = True  # Smooth queue ko update bhejta hai (no duplicate message)
 
-    return jsonify({"status": "success"})
+    return jsonify({"success": True}), 200
 
-# ==========================================
-# TELEGRAM MENU & CALLBACK HANDLERS
-# ==========================================
-@app.route('/telegram-webhook', methods=['POST'])
-def telegram_webhook():
-    update = request.json or {}
-    
-    # 1. CALLBACK QUERIES
-    if "callback_query" in update:
-        query = update["callback_query"]
-        cb_id = query["id"]
-        chat_id = str(query["message"]["chat"]["id"])
-        msg_id = query["message"]["message_id"]
-        cb_data = query.get("data", "")
+# Watcher Bot Endpoint
+@app.route('/watcher_update', methods=['POST'])
+def watcher_update():
+    data = request.json or {}
+    worker = str(data.get("worker", "vansh")).lower()
+    status = data.get("status", "Online 🟢")
 
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery", json={"callback_query_id": cb_id})
-        session = admin_selections.get(chat_id, {"action": "", "selected": set()})
+    if worker in DATA["workers"]:
+        DATA["workers"][worker]["mode"] = status
+        DATA["needs_update"] = True
 
-        # CHECKBOX TOGGLE
-        if cb_data.startswith("toggle_"):
-            parts = cb_data.split("_")
-            action = parts[1]
-            worker_name = parts[2]
-            
-            if worker_name in session["selected"]:
-                session["selected"].remove(worker_name)
-            else:
-                session["selected"].add(worker_name)
+    return jsonify({"success": True}), 200
 
-            session["action"] = action
-            admin_selections[chat_id] = session
-            kb = generate_checklist_keyboard(action, session["selected"])
-            
-            title = "<b>🧹 Clean RDP Workers Select Karein:</b>"
-            if action == "stop":
-                title = "<b>🛑 Stop Work Workers Select Karein:</b>"
-            elif action == "cont":
-                title = "<b>🟢 Continue Work Workers Select Karein:</b>"
-                
-            edit_telegram_msg(chat_id, msg_id, title, kb)
+# --- Telegram Commands ---
 
-        # CLEAN ACTIONS
-        elif cb_data in ["confirm_clean_all", "confirm_clean_sel"]:
-            if cb_data == "confirm_clean_all":
-                session["selected"] = set([w for w in workers_stats.keys() if is_worker_online(w)])
-            
-            admin_selections[chat_id] = session
-            confirm_kb = {
-                "inline_keyboard": [
-                    [
-                        {"text": "✅ Haan, sab reset kare", "callback_data": "exec_clean"},
-                        {"text": "❌ Cancel", "callback_data": "cancel_clean"}
-                    ]
-                ]
-            }
-            edit_telegram_msg(chat_id, msg_id, "aaji sub clean kar raha hu", confirm_kb)
+@bot.message_handler(commands=['start', 'menu'])
+def handle_start(message):
+    send_fresh_card()
 
-        elif cb_data == "exec_clean":
-            edit_telegram_msg(chat_id, msg_id, "sub clean kar diya hai")
-            admin_selections.pop(chat_id, None)
+@bot.message_handler(func=lambda msg: True)
+def handle_menu_actions(message):
+    text = message.text.strip()
+    worker = "vansh"
 
-        elif cb_data == "cancel_clean":
-            edit_telegram_msg(chat_id, msg_id, "cancel kar diya hai kuch delete nhi hua")
-            admin_selections.pop(chat_id, None)
+    # Status dabane par: purana card REMOVE hoga aur ek single fresh card banega
+    if "Status" in text:
+        send_fresh_card()
 
-        # STOP WORK ACTIONS
-        elif cb_data in ["stop_all", "stop_sel"]:
-            if cb_data == "stop_all":
-                target_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-            else:
-                target_workers = list(session.get("selected", []))
+    elif "Online" in text:
+        if worker in DATA["workers"]:
+            DATA["workers"][worker]["mode"] = "Online 🟢"
+        DATA["needs_update"] = True
 
-            if target_workers:
-                for w in target_workers:
-                    if w in workers_stats:
-                        workers_stats[w]["is_paused"] = True
-                save_json(DB_FILE, workers_stats)
-                stopped_names = ", ".join(target_workers)
-                edit_telegram_msg(chat_id, msg_id, f"in sabka work stop kar diya hai:\n<b>{stopped_names}</b>")
-            else:
-                edit_telegram_msg(chat_id, msg_id, "⚠️ Koi worker select nahi kiya gaya tha.")
-            admin_selections.pop(chat_id, None)
+    elif "Offline" in text:
+        if worker in DATA["workers"]:
+            DATA["workers"][worker]["mode"] = "Offline 🔴"
+        DATA["needs_update"] = True
 
-        # CONTINUE WORK ACTIONS
-        elif cb_data in ["cont_all", "cont_sel"]:
-            if cb_data == "cont_all":
-                target_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-            else:
-                target_workers = list(session.get("selected", []))
+    elif "Cont. Work" in text:
+        DATA["needs_update"] = True
 
-            if target_workers:
-                for w in target_workers:
-                    if w in workers_stats:
-                        workers_stats[w]["is_paused"] = False
-                save_json(DB_FILE, workers_stats)
-                resumed_names = ", ".join(target_workers)
-                edit_telegram_msg(chat_id, msg_id, f"in sabka work continue/resume kar diya hai:\n<b>{resumed_names}</b>")
-            else:
-                edit_telegram_msg(chat_id, msg_id, "⚠️ Koi worker select nahi kiya gaya tha.")
-            admin_selections.pop(chat_id, None)
+    elif "Stop Work" in text:
+        DATA["needs_update"] = True
 
-        return jsonify({"status": "ok"})
+    elif "Clean RDP" in text:
+        bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
 
-    # 2. MESSAGE TEXT COMMANDS
-    message = update.get('message', {})
-    chat_id = str(message.get('chat', {}).get('id', ''))
-    raw_text = message.get('text', '').strip()
-    text = raw_text.lower()
-
-    if chat_id != str(ADMIN_CHAT_ID):
-        return jsonify({"status": "unauthorized"})
-
-    # 📊 STATUS BUTTON
-    if 'status' in text:
-        if not workers_stats:
-            send_telegram_msg(chat_id, "⚠️ System Active! Abhi kisi worker ka data nahi hai.")
-        else:
-            for w_name, s in workers_stats.items():
-                msg = build_message(w_name, s)
-                old_msg_id = worker_messages.get(w_name)
-                
-                edited = False
-                if old_msg_id:
-                    edited = edit_telegram_msg(chat_id, old_msg_id, msg)
-                
-                if not edited:
-                    new_id = send_telegram_msg(chat_id, msg)
-                    if new_id:
-                        worker_messages[w_name] = new_id
-                        save_json(MSG_TRACKER_FILE, worker_messages)
-
-    # 🟢 ONLINE
-    elif 'online' in text:
-        online_list = [f"{w_name} 🟢 Online" for w_name in workers_stats.keys() if is_worker_online(w_name)]
-        if online_list:
-            send_telegram_msg(chat_id, "\n".join(online_list))
-        else:
-            send_telegram_msg(chat_id, "⚠️ Abhi koi bhi worker online nahi hai.")
-
-    # 🔴 OFFLINE
-    elif 'offline' in text:
-        offline_list = [f"{w_name} 🛑 offline" for w_name in workers_stats.keys() if not is_worker_online(w_name)]
-        if offline_list:
-            send_telegram_msg(chat_id, "\n".join(offline_list))
-        else:
-            send_telegram_msg(chat_id, "✅ Sabhi workers online hain!")
-
-    # 🧹 CLEAR RDP
-    elif 'clear rdp' in text:
-        admin_selections[chat_id] = {"action": "clean", "selected": set()}
-        online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-        if not online_workers:
-            send_telegram_msg(chat_id, "⚠️ Abhi koi online worker nahi hai jiska RDP clear kiya ja sake.")
-        else:
-            kb = generate_checklist_keyboard("clean", set())
-            send_telegram_msg(chat_id, "<b>🧹 Clean RDP Workers Select Karein:</b>", kb)
-
-    # 🛑 STOP WORK
-    elif 'stop work' in text:
-        admin_selections[chat_id] = {"action": "stop", "selected": set()}
-        online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-        if not online_workers:
-            send_telegram_msg(chat_id, "⚠️ Abhi koi online worker nahi hai jiska work stop kiya ja sake.")
-        else:
-            kb = generate_checklist_keyboard("stop", set())
-            send_telegram_msg(chat_id, "<b>🛑 Stop Work Workers Select Karein:</b>", kb)
-
-    # 🟢 CONT. WORK (Resume)
-    elif 'cont' in text or 'continue' in text:
-        admin_selections[chat_id] = {"action": "cont", "selected": set()}
-        online_workers = [w for w in workers_stats.keys() if is_worker_online(w)]
-        if not online_workers:
-            send_telegram_msg(chat_id, "⚠️ Abhi koi online worker nahi hai jiska work continue kiya ja sake.")
-        else:
-            kb = generate_checklist_keyboard("cont", set())
-            send_telegram_msg(chat_id, "<b>🟢 Continue Work Workers Select Karein:</b>", kb)
-
-    return jsonify({"status": "ok"})
+def start_polling():
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
+    print("Telegram Polling Started...")
+    bot.infinity_polling(skip_pending=True)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5077))
-    app.run(host='0.0.0.0', port=port)
+    # 1. Background live smooth update thread
+    threading.Thread(target=smooth_updater_thread, daemon=True).start()
+    # 2. Telegram polling thread
+    threading.Thread(target=start_polling, daemon=True).start()
+    # 3. Webhook/API Flask Server
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
