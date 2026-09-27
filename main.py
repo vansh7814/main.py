@@ -12,7 +12,7 @@ ALLOWED_ADMIN_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# State data: Sirf ek standard worker rakhenge
+# State data: used_json ko independent rakha hai jo sirf watcher badhayega
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
@@ -25,6 +25,7 @@ DATA = {
             "data_type": "X",
             "allotted": 0,
             "taken": 0,
+            "used_json": 0,       # Sirf Watcher ke *_used.json aane par badhega
             "done": 0,
             "login_failed": 0,
             "wrong_pass": 0,
@@ -37,7 +38,6 @@ SELECTIONS = {}
 edit_lock = threading.Lock()
 
 def normalize_worker_name(raw_name):
-    """8854743478 ya vansh ko ek hi standard worker mein normalize karega."""
     if not raw_name:
         return "vansh"
     name_str = str(raw_name).strip().lower()
@@ -72,11 +72,11 @@ def format_all_workers_card():
         data_type = stats.get("data_type", "X")
         allotted = stats.get("allotted", 0)
         taken = stats.get("taken", 0)
+        used_json = stats.get("used_json", 0)  # Watcher se calculated
         done = stats.get("done", 0)
         failed = stats.get("login_failed", 0)
         wrong = stats.get("wrong_pass", 0)
         manage = stats.get("manage", 0)
-        used_total = done + failed + wrong + manage
         status_mode = stats.get('mode', 'Offline 🔴')
 
         card = (
@@ -85,7 +85,7 @@ def format_all_workers_card():
             f"📦 <b>{data_type} allotted:</b> {allotted}\n"
             f"────────────────────\n"
             f"📥 <b>Taken:</b> {taken}\n"
-            f"📝 <b>Used Json:</b> {used_total}\n"
+            f"📝 <b>Used Json:</b> {used_json}\n"
             f"✅ <b>Done:</b> {done}\n"
             f"❌ <b>Login Failed:</b> {failed}\n"
             f"🔑 <b>Wrong Pass:</b> {wrong}\n"
@@ -96,7 +96,6 @@ def format_all_workers_card():
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards) if cards else "⚠️ <b>Koi worker add nahi hai.</b>"
 
 def force_edit_only():
-    """Worker event aane par SIRF edit karega. Naya message bilkul nahi bhejega."""
     with edit_lock:
         chat_id = DATA.get("chat_id")
         msg_id = DATA.get("msg_id")
@@ -116,7 +115,6 @@ def force_edit_only():
             pass
 
 def recreate_single_card(chat_id):
-    """Purana card delete karke bilkul fresh single message banata hai."""
     with edit_lock:
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
@@ -167,7 +165,7 @@ def home():
     return "Admin & Watcher Central API Active!"
 
 # ══════════════════════════════════════════════════════
-# EVENT HANDLER
+# EVENT HANDLER (Taken vs Used JSON logic separated)
 # ══════════════════════════════════════════════════════
 @app.route('/event', methods=['GET', 'POST'])
 def handle_event():
@@ -186,6 +184,7 @@ def handle_event():
             "data_type": "X",
             "allotted": 0,
             "taken": 0,
+            "used_json": 0,
             "done": 0,
             "login_failed": 0,
             "wrong_pass": 0,
@@ -195,19 +194,31 @@ def handle_event():
     DATA["workers"][worker]["mode"] = "Online 🟢"
     DATA["workers"][worker]["last_seen"] = time.time()
 
+    # 1. Watcher Batch Event (Watcher se aane wala event)
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
         for ev in events_list:
             ev_type = ev.get("type", "")
-            if ev_type == "emailcreated":
-                DATA["workers"][worker]["taken"] += 1
-            elif ev_type in ["emailused", "done"]:
+            # Watcher jab email_used.json detect karta hai to 'emailused' bhejta hai
+            if ev_type == "emailused":
+                DATA["workers"][worker]["used_json"] += 1
+            # File jab processing ke baad done hoti hai
+            elif ev_type == "done":
                 DATA["workers"][worker]["done"] += 1
+            # Agar watcher emailcreated bhej raha ho
+            elif ev_type == "emailcreated":
+                pass
+
+    # 2. VisiHost Email Bot se single event
     else:
         ev_type = req_data.get("event", "")
         ev_status = req_data.get("status", "")
+        
+        # Email Bot se jab worker email take karega -> sirf Taken badhega
         if ev_type == "emailcreated":
             DATA["workers"][worker]["taken"] += 1
+        
+        # Email Bot ke result reports
         elif ev_type == "emailused":
             if ev_status == "done":
                 DATA["workers"][worker]["done"] += 1
@@ -218,7 +229,6 @@ def handle_event():
             elif ev_status == "manage":
                 DATA["workers"][worker]["manage"] += 1
 
-    # Sirf aur sirf live message ko edit karega
     force_edit_only()
     return jsonify({"success": True}), 200
 
@@ -238,6 +248,7 @@ def handle_poll():
             "data_type": "X",
             "allotted": 0,
             "taken": 0,
+            "used_json": 0,
             "done": 0,
             "login_failed": 0,
             "wrong_pass": 0,
