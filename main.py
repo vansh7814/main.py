@@ -7,7 +7,7 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
-ADMIN_CHAT_ID = 5831204930  # Sirf yeh ID bot access kar sakti hai
+ADMIN_CHAT_ID = 5831204930
 
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
@@ -29,10 +29,6 @@ DATA = {
         }
     }
 }
-
-def is_admin(user_id):
-    """Check karega ki request authorized admin se aayi hai ya nahi."""
-    return str(user_id) == str(ADMIN_CHAT_ID)
 
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -71,6 +67,7 @@ def format_all_workers_card():
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
 def force_edit_only():
+    """Worker update aane par koi naya message nahi bhejega, sirf exist message ko edit karega."""
     chat_id = DATA.get("chat_id")
     msg_id = DATA.get("msg_id")
 
@@ -89,6 +86,7 @@ def force_edit_only():
         pass
 
 def recreate_single_card(chat_id):
+    """Purana card delete karke ek hi fresh status card banayega."""
     old_msg_id = DATA.get("msg_id")
     old_chat_id = DATA.get("chat_id") or chat_id
 
@@ -116,7 +114,7 @@ def recreate_single_card(chat_id):
 def home():
     return "Admin API Live!"
 
-# Email Bot Event
+# Email Bot se live event: Numbers silently live edit honge
 @app.route('/event', methods=['POST'])
 def handle_event():
     req_data = request.json or {}
@@ -157,6 +155,7 @@ def handle_event():
 
     DATA["workers"][worker]["mode"] = "Online 🟢"
 
+    # Screen par usi card ke numbers edit honge bina naya message bheje
     force_edit_only()
     return jsonify({"success": True}), 200
 
@@ -175,13 +174,9 @@ def watcher_update():
 
 # --- Telegram Handlers ---
 
+# /start dabane par sirf Menu aayega, koi status card nahi
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    # Sirf Admin access kar sakta hai
-    if not is_admin(message.chat.id):
-        bot.send_message(message.chat.id, "🚫 <b>Access Denied:</b> You are not authorized to use this bot.", parse_mode="HTML")
-        return
-
     DATA["chat_id"] = message.chat.id
     bot.send_message(
         message.chat.id,
@@ -192,15 +187,11 @@ def handle_start(message):
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
-    # Sirf Admin access kar sakta hai
-    if not is_admin(message.chat.id):
-        bot.send_message(message.chat.id, "🚫 <b>Access Denied:</b> You are not authorized to use this bot.", parse_mode="HTML")
-        return
-
     text = message.text.strip()
     chat_id = message.chat.id
     worker = "vansh"
 
+    # Sirf '📊 Status' dabane par purana card delete ho kar naya live card aayega
     if "Status" in text:
         recreate_single_card(chat_id)
 
