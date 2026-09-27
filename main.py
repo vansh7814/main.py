@@ -8,7 +8,6 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
 ADMIN_CHAT_ID = 5831204930
-ADMIN_CHAT_ID = 8854743478
 
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
