@@ -12,12 +12,12 @@ ALLOWED_ADMIN_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# State data
+# State data: Sirf ek standard worker rakhenge
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "clean_rdp_triggered": False,
-    "paused_workers": set(),  # Set of worker names jinka kaam ruka hua hai
+    "paused_workers": set(),
     "workers": {
         "vansh": {
             "mode": "Offline 🔴",
@@ -33,10 +33,17 @@ DATA = {
     }
 }
 
-# Temporary selection store for interactive check-boxes
 SELECTIONS = {}
-
 edit_lock = threading.Lock()
+
+def normalize_worker_name(raw_name):
+    """8854743478 ya vansh ko ek hi standard worker mein normalize karega."""
+    if not raw_name:
+        return "vansh"
+    name_str = str(raw_name).strip().lower()
+    if name_str in ["8854743478", "vansh", "administrator", "default"]:
+        return "vansh"
+    return name_str
 
 def is_authorized(message_or_call):
     user_id = message_or_call.from_user.id
@@ -89,36 +96,27 @@ def format_all_workers_card():
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards) if cards else "⚠️ <b>Koi worker add nahi hai.</b>"
 
 def force_edit_only():
+    """Worker event aane par SIRF edit karega. Naya message bilkul nahi bhejega."""
     with edit_lock:
         chat_id = DATA.get("chat_id")
         msg_id = DATA.get("msg_id")
 
-        if not chat_id:
+        if not chat_id or not msg_id:
             return
 
         text = format_all_workers_card()
-
-        if msg_id:
-            try:
-                bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML")
-                return
-            except Exception as e:
-                if "message is not modified" in str(e).lower():
-                    return
-
         try:
-            sent = bot.send_message(
-                chat_id,
-                text,
-                parse_mode="HTML",
-                reply_markup=get_admin_keyboard(),
-                disable_notification=True
-            )
-            DATA["msg_id"] = sent.message_id
-        except Exception as e:
-            print(f"Card error: {e}")
+            bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML")
+        except telebot.apihelper.ApiTelegramException as e:
+            if "message is not modified" in str(e).lower():
+                return
+            if "message to edit not found" in str(e).lower():
+                DATA["msg_id"] = None
+        except Exception:
+            pass
 
 def recreate_single_card(chat_id):
+    """Purana card delete karke bilkul fresh single message banata hai."""
     with edit_lock:
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
@@ -143,9 +141,6 @@ def recreate_single_card(chat_id):
         except Exception as e:
             print(f"Recreate error: {e}")
 
-# ══════════════════════════════════════════════════════
-# CHECKBOX BUILDER FOR STOP / CONT WORK
-# ══════════════════════════════════════════════════════
 def build_worker_selection_markup(action_type, selected_workers):
     markup = InlineKeyboardMarkup()
     for w_name in DATA["workers"].keys():
@@ -181,7 +176,8 @@ def handle_event():
     else:
         req_data = request.json or {}
 
-    worker = str(req_data.get("user_id") or req_data.get("worker_name", "vansh")).lower()
+    raw_worker = req_data.get("user_id") or req_data.get("worker_name") or "vansh"
+    worker = normalize_worker_name(raw_worker)
 
     if worker not in DATA["workers"]:
         DATA["workers"][worker] = {
@@ -222,6 +218,7 @@ def handle_event():
             elif ev_status == "manage":
                 DATA["workers"][worker]["manage"] += 1
 
+    # Sirf aur sirf live message ko edit karega
     force_edit_only()
     return jsonify({"success": True}), 200
 
@@ -231,7 +228,8 @@ def handle_event():
 @app.route('/poll', methods=['POST'])
 def handle_poll():
     req_data = request.json or {}
-    worker = str(req_data.get("user_id", "vansh")).lower()
+    raw_worker = req_data.get("user_id") or "vansh"
+    worker = normalize_worker_name(raw_worker)
 
     if worker not in DATA["workers"]:
         DATA["workers"][worker] = {
@@ -252,7 +250,6 @@ def handle_poll():
     do_clean = DATA.get("clean_rdp_triggered", False)
     DATA["clean_rdp_triggered"] = False
 
-    # Is specific worker ka work paused hai ya nahi
     is_paused = (worker in DATA["paused_workers"])
 
     return jsonify({
@@ -267,7 +264,6 @@ def handle_poll():
         "bm2_change": None
     }), 200
 
-# Background Watcher Heartbeat
 def heartbeat_check_loop():
     while True:
         try:
@@ -309,7 +305,6 @@ def handle_menu_actions(message):
     if "Status" in text:
         recreate_single_card(chat_id)
 
-    # 1. 🟢 ONLINE BUTTON
     elif "🟢 Online" in text or text == "Online":
         online_list = [w.upper() for w, stats in DATA["workers"].items() if "Online" in stats.get("mode", "")]
         if online_list:
@@ -318,35 +313,28 @@ def handle_menu_actions(message):
             msg = "⚠️ <b>Filhal koi worker online nahi hai!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 2. 🔴 OFFLINE BUTTON
     elif "🔴 Offline" in text or text == "Offline":
         offline_list = [w.upper() for w, stats in DATA["workers"].items() if "Offline" in stats.get("mode", "")]
         if offline_list:
             msg = "<b>🔴 OFFLINE WORKERS:</b>\n\n" + "\n".join([f"🔴 {w}" for w in offline_list])
         else:
-            msg = "✅ <b>Koi worker offline nahi hai, sabhi online hain!</b>"
+            msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 3. ▶️ STOP WORK (Checklist)
     elif "Stop Work" in text:
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("stop", SELECTIONS[chat_id])
         bot.send_message(chat_id, "🛑 <b>Kiska kaam rokna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 4. ⏸️ CONT. WORK (Checklist)
     elif "Cont. Work" in text:
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 5. 🧹 CLEAN RDP
     elif "Clean RDP" in text:
         DATA["clean_rdp_triggered"] = True
         bot.send_message(chat_id, "🧹 <b>Clean Signal Sent:</b> RDP clean will run within 5 seconds on all active watchers.", parse_mode="HTML")
 
-# ══════════════════════════════════════════════════════
-# INLINE BUTTON CALLBACKS (CHECKBOX & ACTIONS)
-# ══════════════════════════════════════════════════════
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     if not is_authorized(call):
@@ -359,7 +347,6 @@ def handle_callbacks(call):
     if chat_id not in SELECTIONS:
         SELECTIONS[chat_id] = set()
 
-    # Toggle Checkbox
     if cmd == "toggle":
         action_type = data_parts[1]
         worker_name = data_parts[2]
@@ -376,12 +363,10 @@ def handle_callbacks(call):
             pass
         bot.answer_callback_query(call.id)
 
-    # Execute Actions
     elif cmd == "exec":
         action_type = data_parts[1]
         target = data_parts[2]
 
-        # Stop Actions
         if action_type == "stop":
             if target == "all":
                 for w in DATA["workers"].keys():
@@ -397,7 +382,6 @@ def handle_callbacks(call):
                 names = ", ".join([s.upper() for s in selected])
                 bot.edit_message_text(f"🛑 <b>In workers ka kaam STOP kar diya gaya hai:</b>\n{names}", chat_id, call.message.message_id, parse_mode="HTML")
 
-        # Cont Actions
         elif action_type == "cont":
             if target == "all":
                 DATA["paused_workers"].clear()
