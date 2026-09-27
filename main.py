@@ -7,18 +7,20 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
-ADMIN_CHAT_ID = 5831204930  # Sirf yeh ID bot access kar sakti hai
+ALLOWED_ADMIN_ID = 5831204930
 
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# State data
 DATA = {
-    "chat_id": ADMIN_CHAT_ID,
+    "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
+    "clean_rdp_triggered": False,
+    "work_paused": False,
     "workers": {
         "vansh": {
-            "mode": "Online 🟢",
+            "mode": "Offline 🔴",
+            "last_seen": 0,
             "data_type": "X",
             "allotted": 0,
             "taken": 0,
@@ -30,9 +32,7 @@ DATA = {
     }
 }
 
-def is_admin(user_id):
-    """Check karega ki request authorized admin se aayi hai ya nahi."""
-    return str(user_id) == str(ADMIN_CHAT_ID)
+edit_lock = threading.Lock()
 
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -56,7 +56,7 @@ def format_all_workers_card():
 
         card = (
             f"📊 <b>Live Monitor — {worker_name.upper()}</b>\n\n"
-            f"🌐 <b>Network:</b> {stats.get('mode', 'Online 🟢')}\n"
+            f"🌐 <b>Network:</b> {stats.get('mode', 'Offline 🔴')}\n"
             f"📦 <b>{data_type} allotted:</b> {allotted}\n"
             f"────────────────────\n"
             f"📥 <b>Taken:</b> {taken}\n"
@@ -71,66 +71,83 @@ def format_all_workers_card():
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
 def force_edit_only():
-    chat_id = DATA.get("chat_id")
-    msg_id = DATA.get("msg_id")
+    with edit_lock:
+        chat_id = DATA.get("chat_id")
+        msg_id = DATA.get("msg_id")
 
-    if not chat_id or not msg_id:
-        return
+        if not chat_id:
+            return
 
-    text = format_all_workers_card()
-    try:
-        bot.edit_message_text(
-            text,
-            chat_id=chat_id,
-            message_id=msg_id,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
+        text = format_all_workers_card()
+
+        if msg_id:
+            try:
+                bot.edit_message_text(text, chat_id=chat_id, message_id=msg_id, parse_mode="HTML")
+                return
+            except Exception as e:
+                if "message is not modified" in str(e).lower():
+                    return
+                print(f"Edit warning: {e}")
+
+        try:
+            sent = bot.send_message(
+                chat_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard(),
+                disable_notification=True
+            )
+            DATA["msg_id"] = sent.message_id
+        except Exception as e:
+            print(f"Send card error: {e}")
 
 def recreate_single_card(chat_id):
-    old_msg_id = DATA.get("msg_id")
-    old_chat_id = DATA.get("chat_id") or chat_id
+    with edit_lock:
+        old_msg_id = DATA.get("msg_id")
+        old_chat_id = DATA.get("chat_id") or chat_id
 
-    if old_msg_id:
+        if old_msg_id:
+            try:
+                bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
+            except Exception:
+                pass
+
+        text = format_all_workers_card()
         try:
-            bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
-        except Exception:
-            pass
-
-    text = format_all_workers_card()
-    try:
-        sent = bot.send_message(
-            chat_id,
-            text,
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard(),
-            disable_notification=True
-        )
-        DATA["chat_id"] = chat_id
-        DATA["msg_id"] = sent.message_id
-    except Exception as e:
-        print(f"Error creating card: {e}")
+            sent = bot.send_message(
+                chat_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard(),
+                disable_notification=True
+            )
+            DATA["chat_id"] = chat_id
+            DATA["msg_id"] = sent.message_id
+        except Exception as e:
+            print(f"Recreate error: {e}")
 
 @app.route('/')
 def home():
-    return "Admin API Live!"
+    return "Admin & Watcher Central API Active!"
 
-# Email Bot Event
-@app.route('/event', methods=['POST'])
+# ══════════════════════════════════════════════════════
+# EVENT HANDLER (Supports VisiHost Bot + PC Watcher)
+# ══════════════════════════════════════════════════════
+@app.route('/event', methods=['GET', 'POST'])
 def handle_event():
-    req_data = request.json or {}
-    worker = str(req_data.get("worker_name", "vansh")).lower()
-    event = req_data.get("event", "")
-    status = req_data.get("status", "")
-    incoming_data_type = req_data.get("data_type")
-    incoming_allotted = req_data.get("allotted")
+    if request.method == 'GET':
+        req_data = request.args.to_dict()
+    else:
+        req_data = request.json or {}
+
+    worker = str(req_data.get("user_id") or req_data.get("worker_name", "vansh")).lower()
 
     if worker not in DATA["workers"]:
         DATA["workers"][worker] = {
             "mode": "Online 🟢",
-            "data_type": incoming_data_type or "X",
-            "allotted": incoming_allotted or 0,
+            "last_seen": time.time(),
+            "data_type": "X",
+            "allotted": 0,
             "taken": 0,
             "done": 0,
             "login_failed": 0,
@@ -138,65 +155,95 @@ def handle_event():
             "manage": 0
         }
 
-    if incoming_data_type:
-        DATA["workers"][worker]["data_type"] = incoming_data_type
-    if incoming_allotted is not None:
-        DATA["workers"][worker]["allotted"] = incoming_allotted
-
-    if event == "emailcreated":
-        DATA["workers"][worker]["taken"] += 1
-    elif event == "emailused":
-        if status == "done":
-            DATA["workers"][worker]["done"] += 1
-        elif status == "login_failed":
-            DATA["workers"][worker]["login_failed"] += 1
-        elif status == "wrong_pass":
-            DATA["workers"][worker]["wrong_pass"] += 1
-        elif status == "manage":
-            DATA["workers"][worker]["manage"] += 1
-
     DATA["workers"][worker]["mode"] = "Online 🟢"
+    DATA["workers"][worker]["last_seen"] = time.time()
+
+    # Watcher Batch Format Handle
+    events_list = req_data.get("events", [])
+    if isinstance(events_list, list) and events_list:
+        for ev in events_list:
+            ev_type = ev.get("type", "")
+            if ev_type == "emailcreated":
+                DATA["workers"][worker]["taken"] += 1
+            elif ev_type in ["emailused", "done"]:
+                DATA["workers"][worker]["done"] += 1
+
+    # VisiHost Direct Format Handle
+    else:
+        ev_type = req_data.get("event", "")
+        ev_status = req_data.get("status", "")
+        if ev_type == "emailcreated":
+            DATA["workers"][worker]["taken"] += 1
+        elif ev_type == "emailused":
+            if ev_status == "done":
+                DATA["workers"][worker]["done"] += 1
+            elif ev_status == "login_failed":
+                DATA["workers"][worker]["login_failed"] += 1
+            elif ev_status == "wrong_pass":
+                DATA["workers"][worker]["wrong_pass"] += 1
+            elif ev_status == "manage":
+                DATA["workers"][worker]["manage"] += 1
 
     force_edit_only()
     return jsonify({"success": True}), 200
 
-# Watcher Bot Endpoint
-@app.route('/watcher_update', methods=['POST'])
-def watcher_update():
+# ══════════════════════════════════════════════════════
+# WATCHER POLL HANDLER (Every 5s from Watcher)
+# ══════════════════════════════════════════════════════
+@app.route('/poll', methods=['POST'])
+def handle_poll():
     req_data = request.json or {}
-    worker = str(req_data.get("worker", "vansh")).lower()
-    status = req_data.get("status", "Online 🟢")
+    worker = str(req_data.get("user_id", "vansh")).lower()
 
     if worker in DATA["workers"]:
-        DATA["workers"][worker]["mode"] = status
-        force_edit_only()
+        DATA["workers"][worker]["mode"] = "Online 🟢"
+        DATA["workers"][worker]["last_seen"] = time.time()
 
-    return jsonify({"success": True}), 200
+    do_clean = DATA.get("clean_rdp_triggered", False)
+    DATA["clean_rdp_triggered"] = False
+
+    return jsonify({
+        "deletes": [],
+        "pending_filenames": [],
+        "pending_downloads": [],
+        "work_paused": DATA.get("work_paused", False),
+        "clean_downloads": do_clean,
+        "stop_watcher": False,
+        "delete_done_files": True,
+        "delete_used_json": False,
+        "bm2_change": None
+    }), 200
+
+# Watcher Heartbeat Checker
+def heartbeat_check_loop():
+    while True:
+        try:
+            current_time = time.time()
+            changed = False
+            for worker, stats in DATA["workers"].items():
+                if stats["mode"] == "Online 🟢" and (current_time - stats.get("last_seen", 0) > 25):
+                    stats["mode"] = "Offline 🔴"
+                    changed = True
+            if changed:
+                force_edit_only()
+        except Exception:
+            pass
+        time.sleep(5)
 
 # --- Telegram Handlers ---
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    # Sirf Admin access kar sakta hai
-    if not is_admin(message.chat.id):
-        bot.send_message(message.chat.id, "🚫 <b>Access Denied:</b> You are not authorized to use this bot.", parse_mode="HTML")
-        return
-
     DATA["chat_id"] = message.chat.id
     bot.send_message(
         message.chat.id,
-        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons se bot control karein.",
+        "👋 <b>Welcome Admin!</b>\n\nNiche buttons se bot control karein.",
         parse_mode="HTML",
         reply_markup=get_admin_keyboard()
     )
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
-    # Sirf Admin access kar sakta hai
-    if not is_admin(message.chat.id):
-        bot.send_message(message.chat.id, "🚫 <b>Access Denied:</b> You are not authorized to use this bot.", parse_mode="HTML")
-        return
-
     text = message.text.strip()
     chat_id = message.chat.id
     worker = "vansh"
@@ -215,24 +262,30 @@ def handle_menu_actions(message):
         force_edit_only()
 
     elif "Cont. Work" in text:
+        DATA["work_paused"] = False
+        bot.send_message(chat_id, "▶️ <b>Work Resumed:</b> Worker screen overlay removed.", parse_mode="HTML")
         force_edit_only()
 
     elif "Stop Work" in text:
+        DATA["work_paused"] = True
+        bot.send_message(chat_id, "🛑 <b>Stop Work Sent:</b> Fullscreen overlay will show on worker PC.", parse_mode="HTML")
         force_edit_only()
 
     elif "Clean RDP" in text:
-        bot.send_message(chat_id, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
+        DATA["clean_rdp_triggered"] = True
+        bot.send_message(chat_id, "🧹 <b>Clean Signal Sent:</b> RDP clean will run within 5 seconds.", parse_mode="HTML")
 
 def start_polling():
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception:
-        pass
-    print("Telegram Polling Active...")
-    bot.infinity_polling(skip_pending=True)
+    while True:
+        try:
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception:
+            time.sleep(2)
 
 if __name__ == '__main__':
+    threading.Thread(target=heartbeat_check_loop, daemon=True).start()
     threading.Thread(target=start_polling, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
