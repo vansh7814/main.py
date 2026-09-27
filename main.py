@@ -85,14 +85,14 @@ def format_all_workers_card(workers):
 
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
-def live_inplace_refresh():
-    """Video 2 ki tarah ek hi card ko smoothly live edit karega."""
+def update_or_create_card(force_new=False):
     with edit_lock:
         state = get_state()
         text = format_all_workers_card(state["workers"])
         msg_id = state.get("msg_id")
 
-        if msg_id:
+        # Agar pehle se card bana hua hai toh ONLY EDIT KAREIN, naya message bilkul mat bhejein
+        if msg_id and not force_new:
             try:
                 bot.edit_message_text(
                     text,
@@ -102,14 +102,21 @@ def live_inplace_refresh():
                 )
                 return
             except telebot.apihelper.ApiTelegramException as e:
-                # Agar text change nahi hua toh error skip karein
+                # Agar text same hai (count nahi badla) toh chupchap return ho jaye
                 if "message is not modified" in str(e).lower():
                     return
                 print(f"Edit warning: {e}")
             except Exception as e:
-                print(f"Edit general error: {e}")
+                print(f"Edit error: {e}")
+            return  # Fail hone par bhi naya message send nahi hone dega
 
-        # Agar msg_id exist nahi karta (pehli baar ke liye), tabhi new message bheje
+        # Agar force_new ho ya pehle se koi msg_id na ho
+        if msg_id and force_new:
+            try:
+                bot.delete_message(chat_id=ADMIN_CHAT_ID, message_id=msg_id)
+            except Exception:
+                pass
+
         try:
             sent = bot.send_message(
                 ADMIN_CHAT_ID,
@@ -121,7 +128,7 @@ def live_inplace_refresh():
             state["msg_id"] = sent.message_id
             save_state(state)
         except Exception as e:
-            print(f"Send initial card error: {e}")
+            print(f"Send error: {e}")
 
 @app.route('/')
 def home():
@@ -170,8 +177,8 @@ def handle_event():
     state["workers"][worker]["mode"] = "Online 🟢"
     save_state(state)
 
-    # In-place silent live refresh bina kisi new message ke
-    live_inplace_refresh()
+    # In-place live smooth update bina kisi new message ke
+    update_or_create_card(force_new=False)
     return jsonify({"success": True}), 200
 
 # Watcher Bot Endpoint
@@ -185,7 +192,7 @@ def watcher_update():
     if worker in state["workers"]:
         state["workers"][worker]["mode"] = status
         save_state(state)
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     return jsonify({"success": True}), 200
 
@@ -193,7 +200,7 @@ def watcher_update():
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    live_inplace_refresh()
+    update_or_create_card(force_new=False)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -201,27 +208,27 @@ def handle_menu_actions(message):
     worker = "vansh"
     state = get_state()
 
-    # Status dabane par naya card nahi banega, wahi current card live refresh hoga
+    # Status button dabane par bhi naya card nahi banega, usi message ko smoothly refresh karega
     if "Status" in text:
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     elif "Online" in text:
         if worker in state["workers"]:
             state["workers"][worker]["mode"] = "Online 🟢"
             save_state(state)
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     elif "Offline" in text:
         if worker in state["workers"]:
             state["workers"][worker]["mode"] = "Offline 🔴"
             save_state(state)
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     elif "Cont. Work" in text:
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     elif "Stop Work" in text:
-        live_inplace_refresh()
+        update_or_create_card(force_new=False)
 
     elif "Clean RDP" in text:
         bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
