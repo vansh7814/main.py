@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import threading
 from flask import Flask, request, jsonify
 import telebot
@@ -11,8 +12,7 @@ ADMIN_CHAT_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# Multi-worker tracking storage
-# Har active worker ka data isme dynamically save hoga
+# Active data store
 DATA = {
     "workers": {
         "vansh": {
@@ -35,7 +35,6 @@ def get_admin_keyboard():
     return markup
 
 def format_all_workers_card():
-    """Sirf unhi workers ke card banayega jinka record maujood hai."""
     if not DATA["workers"]:
         return "⚠️ <b>Filhal koi worker active nahi hai!</b>"
 
@@ -60,7 +59,7 @@ def format_all_workers_card():
 def home():
     return "Admin API Live!"
 
-# Email Bot se aane wale events — KOI BHI NOTIFICATION NAHI BHEJEGA
+# Email Bot se silent data receive karna
 @app.route('/event', methods=['POST'])
 def handle_event():
     data = request.json or {}
@@ -68,7 +67,6 @@ def handle_event():
     event = data.get("event", "")
     status = data.get("status", "")
 
-    # Naya worker add ya existing worker load
     if worker not in DATA["workers"]:
         DATA["workers"][worker] = {
             "mode": "Online 🟢",
@@ -79,7 +77,6 @@ def handle_event():
             "manage": 0
         }
 
-    # Silent background counter update
     if event == "emailcreated":
         DATA["workers"][worker]["taken"] += 1
     elif event == "emailused":
@@ -93,29 +90,9 @@ def handle_event():
             DATA["workers"][worker]["manage"] += 1
 
     DATA["workers"][worker]["mode"] = "Online 🟢"
-
-    # NOTE: Yahan koi Telegram message send/edit call nahi hai, isliye bilkul silent rahega
     return jsonify({"success": True}), 200
 
-# Watcher Bot se status sync
-@app.route('/watcher_update', methods=['POST'])
-def watcher_update():
-    data = request.json or {}
-    worker = str(data.get("worker", "vansh")).lower()
-    status = data.get("status", "Online 🟢")
-    
-    if worker not in DATA["workers"]:
-        DATA["workers"][worker] = {
-            "mode": status,
-            "taken": 0, "done": 0, "login_failed": 0, "wrong_pass": 0, "manage": 0
-        }
-    else:
-        DATA["workers"][worker]["mode"] = status
-
-    return jsonify({"success": True}), 200
-
-# --- Telegram Bot Commands & Buttons ---
-
+# Telegram Handlers
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     text = format_all_workers_card()
@@ -126,7 +103,6 @@ def handle_menu_actions(message):
     text = message.text.strip()
     worker = "vansh"
 
-    # JUB AAP '📊 Status' PAR CLICK KARENGE TABHI REPORT AAYEGI
     if "Status" in text:
         report_text = format_all_workers_card()
         bot.send_message(ADMIN_CHAT_ID, report_text, parse_mode="HTML", reply_markup=get_admin_keyboard())
@@ -151,6 +127,15 @@ def handle_menu_actions(message):
         bot.send_message(ADMIN_CHAT_ID, "🧹 <b>Clean signal issued for Vansh.</b>", parse_mode="HTML")
 
 def start_polling():
+    # Conflict 409 se bachne ke liye pehle webhook permanently remove karein
+    try:
+        print("Removing conflicting Webhooks...")
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception as e:
+        print(f"Webhook remove warning: {e}")
+
+    print("Admin Bot Telegram Polling Active...")
     bot.infinity_polling(skip_pending=True)
 
 if __name__ == '__main__':
