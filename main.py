@@ -7,6 +7,7 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
+# STRICT ADMIN LOCK: Sirf is ID ko access milega
 ALLOWED_ADMIN_ID = 5831204930
 
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
@@ -33,6 +34,21 @@ DATA = {
 }
 
 edit_lock = threading.Lock()
+
+def is_authorized(message):
+    """Check karta hai ki message sirf aapke account se aaya hai ya nahi."""
+    user_id = message.from_user.id
+    if user_id != ALLOWED_ADMIN_ID:
+        try:
+            bot.send_message(
+                message.chat.id,
+                "🚫 <b>Access Denied:</b> Aap is bot ke admin nahi hain.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return False
+    return True
 
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -131,7 +147,7 @@ def home():
     return "Admin & Watcher Central API Active!"
 
 # ══════════════════════════════════════════════════════
-# EVENT HANDLER (Supports VisiHost Bot + PC Watcher)
+# EVENT HANDLER (VisiHost & Watcher)
 # ══════════════════════════════════════════════════════
 @app.route('/event', methods=['GET', 'POST'])
 def handle_event():
@@ -158,7 +174,6 @@ def handle_event():
     DATA["workers"][worker]["mode"] = "Online 🟢"
     DATA["workers"][worker]["last_seen"] = time.time()
 
-    # Watcher Batch Format Handle
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
         for ev in events_list:
@@ -167,8 +182,6 @@ def handle_event():
                 DATA["workers"][worker]["taken"] += 1
             elif ev_type in ["emailused", "done"]:
                 DATA["workers"][worker]["done"] += 1
-
-    # VisiHost Direct Format Handle
     else:
         ev_type = req_data.get("event", "")
         ev_status = req_data.get("status", "")
@@ -188,7 +201,7 @@ def handle_event():
     return jsonify({"success": True}), 200
 
 # ══════════════════════════════════════════════════════
-# WATCHER POLL HANDLER (Every 5s from Watcher)
+# WATCHER POLL HANDLER
 # ══════════════════════════════════════════════════════
 @app.route('/poll', methods=['POST'])
 def handle_poll():
@@ -214,7 +227,7 @@ def handle_poll():
         "bm2_change": None
     }), 200
 
-# Watcher Heartbeat Checker
+# Watcher Heartbeat
 def heartbeat_check_loop():
     while True:
         try:
@@ -230,10 +243,16 @@ def heartbeat_check_loop():
             pass
         time.sleep(5)
 
-# --- Telegram Handlers ---
+# ══════════════════════════════════════════════════════
+# SECURE TELEGRAM HANDLERS (ADMIN ONLY)
+# ══════════════════════════════════════════════════════
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
+    # Security check: Any non-admin is blocked
+    if not is_authorized(message):
+        return
+
     DATA["chat_id"] = message.chat.id
     bot.send_message(
         message.chat.id,
@@ -244,6 +263,10 @@ def handle_start(message):
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
+    # Security check: Any non-admin is blocked
+    if not is_authorized(message):
+        return
+
     text = message.text.strip()
     chat_id = message.chat.id
     worker = "vansh"
