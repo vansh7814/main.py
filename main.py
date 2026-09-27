@@ -12,40 +12,23 @@ ADMIN_CHAT_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-DATA_FILE = "live_data.json"
-counter_lock = threading.Lock()
-
-def load_data():
-    default_data = {
-        "chat_id": ADMIN_CHAT_ID,
-        "msg_id": None,
-        "workers": {
-            "vansh": {
-                "mode": "Online 🟢",
-                "data_type": "X",
-                "allotted": 0,
-                "taken": 0,
-                "done": 0,
-                "login_failed": 0,
-                "wrong_pass": 0,
-                "manage": 0
-            }
+# Memory Store
+DATA = {
+    "chat_id": ADMIN_CHAT_ID,
+    "msg_id": None,
+    "workers": {
+        "vansh": {
+            "mode": "Online 🟢",
+            "data_type": "X",
+            "allotted": 0,
+            "taken": 0,
+            "done": 0,
+            "login_failed": 0,
+            "wrong_pass": 0,
+            "manage": 0
         }
     }
-    if not os.path.exists(DATA_FILE):
-        return default_data
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default_data
-
-def save_data(data):
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"Save error: {e}")
+}
 
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -55,12 +38,9 @@ def get_admin_keyboard():
     markup.row(KeyboardButton("🧹 Clean RDP"))
     return markup
 
-def format_all_workers_card(workers):
-    if not workers:
-        return "⚠️ <b>Filhal koi worker active nahi hai!</b>"
-
+def format_all_workers_card():
     cards = []
-    for worker_name, stats in workers.items():
+    for worker_name, stats in DATA["workers"].items():
         data_type = stats.get("data_type", "X")
         allotted = stats.get("allotted", 0)
         taken = stats.get("taken", 0)
@@ -86,82 +66,55 @@ def format_all_workers_card(workers):
 
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
-def live_inplace_refresh():
-    """Video 2 ki tarah bina naya message banaye card ke numbers ko live smooth update karega."""
-    with counter_lock:
-        data = load_data()
-        chat_id = data.get("chat_id") or ADMIN_CHAT_ID
-        msg_id = data.get("msg_id")
+def force_edit_only():
+    """Worker update par KABHI BHI NAYA MESSAGE NAHI BHEJEGA, sirf edit karega."""
+    chat_id = DATA.get("chat_id")
+    msg_id = DATA.get("msg_id")
 
-        text = format_all_workers_card(data["workers"])
+    if not chat_id or not msg_id:
+        return
 
-        # Agar pehle se card screen par hai toh direct in-place edit karein
-        if msg_id:
-            try:
-                bot.edit_message_text(
-                    text,
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    parse_mode="HTML"
-                )
-                return
-            except telebot.apihelper.ApiTelegramException as e:
-                err_msg = str(e).lower()
-                if "message is not modified" in err_msg:
-                    return
-                if "message to edit not found" in err_msg or "message can't be edited" in err_msg:
-                    data["msg_id"] = None
-            except Exception as e:
-                print(f"Edit warning: {e}")
+    text = format_all_workers_card()
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
-        # Agar message exist nahi karta, pehli baar create karein
+def recreate_single_card(chat_id):
+    """Purana card delete karega aur bilkul ek single fresh card banayega."""
+    old_msg_id = DATA.get("msg_id")
+    old_chat_id = DATA.get("chat_id") or chat_id
+
+    if old_msg_id:
         try:
-            sent = bot.send_message(
-                chat_id,
-                text,
-                parse_mode="HTML",
-                reply_markup=get_admin_keyboard(),
-                disable_notification=True
-            )
-            data["chat_id"] = chat_id
-            data["msg_id"] = sent.message_id
-            save_data(data)
-        except Exception as e:
-            print(f"Initial send error: {e}")
+            bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
+        except Exception:
+            pass
 
-def create_fresh_card(chat_id):
-    """Status dabane par purana card delete karega aur bilkul fresh single card banayega."""
-    with counter_lock:
-        data = load_data()
-        old_msg_id = data.get("msg_id")
-        target_chat = data.get("chat_id") or chat_id
-
-        if old_msg_id:
-            try:
-                bot.delete_message(chat_id=target_chat, message_id=old_msg_id)
-            except Exception:
-                pass
-
-        text = format_all_workers_card(data["workers"])
-        try:
-            sent = bot.send_message(
-                chat_id,
-                text,
-                parse_mode="HTML",
-                reply_markup=get_admin_keyboard(),
-                disable_notification=True
-            )
-            data["chat_id"] = chat_id
-            data["msg_id"] = sent.message_id
-            save_data(data)
-        except Exception as e:
-            print(f"Send fresh card error: {e}")
+    text = format_all_workers_card()
+    try:
+        sent = bot.send_message(
+            chat_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(),
+            disable_notification=True
+        )
+        DATA["chat_id"] = chat_id
+        DATA["msg_id"] = sent.message_id
+    except Exception as e:
+        print(f"Error creating card: {e}")
 
 @app.route('/')
 def home():
     return "Admin API Live!"
 
-# Email Bot Event: Live smoothly count update karega
+# Email Bot Event: 100% EDIT ONLY (NO NEW MESSAGE)
 @app.route('/event', methods=['POST'])
 def handle_event():
     req_data = request.json or {}
@@ -171,9 +124,8 @@ def handle_event():
     incoming_data_type = req_data.get("data_type")
     incoming_allotted = req_data.get("allotted")
 
-    data = load_data()
-    if worker not in data["workers"]:
-        data["workers"][worker] = {
+    if worker not in DATA["workers"]:
+        DATA["workers"][worker] = {
             "mode": "Online 🟢",
             "data_type": incoming_data_type or "X",
             "allotted": incoming_allotted or 0,
@@ -185,27 +137,26 @@ def handle_event():
         }
 
     if incoming_data_type:
-        data["workers"][worker]["data_type"] = incoming_data_type
+        DATA["workers"][worker]["data_type"] = incoming_data_type
     if incoming_allotted is not None:
-        data["workers"][worker]["allotted"] = incoming_allotted
+        DATA["workers"][worker]["allotted"] = incoming_allotted
 
     if event == "emailcreated":
-        data["workers"][worker]["taken"] += 1
+        DATA["workers"][worker]["taken"] += 1
     elif event == "emailused":
         if status == "done":
-            data["workers"][worker]["done"] += 1
+            DATA["workers"][worker]["done"] += 1
         elif status == "login_failed":
-            data["workers"][worker]["login_failed"] += 1
+            DATA["workers"][worker]["login_failed"] += 1
         elif status == "wrong_pass":
-            data["workers"][worker]["wrong_pass"] += 1
+            DATA["workers"][worker]["wrong_pass"] += 1
         elif status == "manage":
-            data["workers"][worker]["manage"] += 1
+            DATA["workers"][worker]["manage"] += 1
 
-    data["workers"][worker]["mode"] = "Online 🟢"
-    save_data(data)
+    DATA["workers"][worker]["mode"] = "Online 🟢"
 
-    # In-place real-time smooth update trigger
-    live_inplace_refresh()
+    # SIRF EDIT HOGA, NAYA MESSAGE BHEJNA CODE SE BLOCK HAI
+    force_edit_only()
     return jsonify({"success": True}), 200
 
 # Watcher Bot Endpoint
@@ -215,11 +166,9 @@ def watcher_update():
     worker = str(req_data.get("worker", "vansh")).lower()
     status = req_data.get("status", "Online 🟢")
 
-    data = load_data()
-    if worker in data["workers"]:
-        data["workers"][worker]["mode"] = status
-        save_data(data)
-        live_inplace_refresh()
+    if worker in DATA["workers"]:
+        DATA["workers"][worker]["mode"] = status
+        force_edit_only()
 
     return jsonify({"success": True}), 200
 
@@ -227,36 +176,33 @@ def watcher_update():
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
-    create_fresh_card(message.chat.id)
+    recreate_single_card(message.chat.id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
     text = message.text.strip()
     chat_id = message.chat.id
     worker = "vansh"
-    data = load_data()
 
-    # Status dabane par: purana card delete hokar single active card banega
+    # Status dabane par: purana delete hoga aur single new card aayega
     if "Status" in text:
-        create_fresh_card(chat_id)
+        recreate_single_card(chat_id)
 
     elif "Online" in text:
-        if worker in data["workers"]:
-            data["workers"][worker]["mode"] = "Online 🟢"
-            save_data(data)
-        live_inplace_refresh()
+        if worker in DATA["workers"]:
+            DATA["workers"][worker]["mode"] = "Online 🟢"
+        force_edit_only()
 
     elif "Offline" in text:
-        if worker in data["workers"]:
-            data["workers"][worker]["mode"] = "Offline 🔴"
-            save_data(data)
-        live_inplace_refresh()
+        if worker in DATA["workers"]:
+            DATA["workers"][worker]["mode"] = "Offline 🔴"
+        force_edit_only()
 
     elif "Cont. Work" in text:
-        live_inplace_refresh()
+        force_edit_only()
 
     elif "Stop Work" in text:
-        live_inplace_refresh()
+        force_edit_only()
 
     elif "Clean RDP" in text:
         bot.send_message(chat_id, "🧹 <b>Clean command issued.</b>", parse_mode="HTML")
