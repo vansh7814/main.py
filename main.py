@@ -7,14 +7,17 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFTef0-nroxCS_sAP1SaTwHeWDzKJgljX0"
+ADMIN_CHAT_ID = 5831204930
+
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
 DATA_FILE = "live_data.json"
+counter_lock = threading.Lock()
 
 def load_data():
     default_data = {
-        "chat_id": None,
+        "chat_id": ADMIN_CHAT_ID,
         "msg_id": None,
         "workers": {
             "vansh": {
@@ -84,62 +87,81 @@ def format_all_workers_card(workers):
     return "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(cards)
 
 def live_inplace_refresh():
-    """Video 2 ki tarah bina naya message bheje usi message ke number ko live update karega."""
-    data = load_data()
-    chat_id = data.get("chat_id")
-    msg_id = data.get("msg_id")
+    """Video 2 ki tarah bina naya message banaye card ke numbers ko live smooth update karega."""
+    with counter_lock:
+        data = load_data()
+        chat_id = data.get("chat_id") or ADMIN_CHAT_ID
+        msg_id = data.get("msg_id")
 
-    if not chat_id or not msg_id:
-        return
+        text = format_all_workers_card(data["workers"])
 
-    text = format_all_workers_card(data["workers"])
-    try:
-        bot.edit_message_text(
-            text,
-            chat_id=chat_id,
-            message_id=msg_id,
-            parse_mode="HTML"
-        )
-    except telebot.apihelper.ApiTelegramException as e:
-        if "message is not modified" in str(e).lower():
-            return
-        print(f"Edit warning: {e}")
-    except Exception as e:
-        print(f"Edit error: {e}")
+        # Agar pehle se card screen par hai toh direct in-place edit karein
+        if msg_id:
+            try:
+                bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    parse_mode="HTML"
+                )
+                return
+            except telebot.apihelper.ApiTelegramException as e:
+                err_msg = str(e).lower()
+                if "message is not modified" in err_msg:
+                    return
+                if "message to edit not found" in err_msg or "message can't be edited" in err_msg:
+                    data["msg_id"] = None
+            except Exception as e:
+                print(f"Edit warning: {e}")
+
+        # Agar message exist nahi karta, pehli baar create karein
+        try:
+            sent = bot.send_message(
+                chat_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard(),
+                disable_notification=True
+            )
+            data["chat_id"] = chat_id
+            data["msg_id"] = sent.message_id
+            save_data(data)
+        except Exception as e:
+            print(f"Initial send error: {e}")
 
 def create_fresh_card(chat_id):
-    """Purana wala message delete karega aur bilkul fresh single card banayega."""
-    data = load_data()
-    old_msg_id = data.get("msg_id")
-    old_chat_id = data.get("chat_id") or chat_id
+    """Status dabane par purana card delete karega aur bilkul fresh single card banayega."""
+    with counter_lock:
+        data = load_data()
+        old_msg_id = data.get("msg_id")
+        target_chat = data.get("chat_id") or chat_id
 
-    # Purana wala delete karein
-    if old_msg_id:
+        if old_msg_id:
+            try:
+                bot.delete_message(chat_id=target_chat, message_id=old_msg_id)
+            except Exception:
+                pass
+
+        text = format_all_workers_card(data["workers"])
         try:
-            bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
-        except Exception:
-            pass
-
-    text = format_all_workers_card(data["workers"])
-    try:
-        sent = bot.send_message(
-            chat_id,
-            text,
-            parse_mode="HTML",
-            reply_markup=get_admin_keyboard(),
-            disable_notification=True
-        )
-        data["chat_id"] = chat_id
-        data["msg_id"] = sent.message_id
-        save_data(data)
-    except Exception as e:
-        print(f"Send fresh card error: {e}")
+            sent = bot.send_message(
+                chat_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=get_admin_keyboard(),
+                disable_notification=True
+            )
+            data["chat_id"] = chat_id
+            data["msg_id"] = sent.message_id
+            save_data(data)
+        except Exception as e:
+            print(f"Send fresh card error: {e}")
 
 @app.route('/')
 def home():
     return "Admin API Live!"
 
-# Email Bot se live event: Numbers smoothly update honge
+# Email Bot Event: Live smoothly count update karega
 @app.route('/event', methods=['POST'])
 def handle_event():
     req_data = request.json or {}
@@ -182,7 +204,7 @@ def handle_event():
     data["workers"][worker]["mode"] = "Online 🟢"
     save_data(data)
 
-    # In-place smooth counter update
+    # In-place real-time smooth update trigger
     live_inplace_refresh()
     return jsonify({"success": True}), 200
 
@@ -214,7 +236,7 @@ def handle_menu_actions(message):
     worker = "vansh"
     data = load_data()
 
-    # Agar Status dabayein: Pehla wala message delete hoga aur bilkul single fresh card banega
+    # Status dabane par: purana card delete hokar single active card banega
     if "Status" in text:
         create_fresh_card(chat_id)
 
@@ -245,7 +267,7 @@ def start_polling():
         time.sleep(1)
     except Exception:
         pass
-    print("Telegram Polling Started...")
+    print("Telegram Polling Active...")
     bot.infinity_polling(skip_pending=True)
 
 if __name__ == '__main__':
