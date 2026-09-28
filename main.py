@@ -4,7 +4,7 @@ import time
 import threading
 from flask import Flask, request, jsonify
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
 ALLOWED_ADMIN_ID = 5831204930
@@ -120,21 +120,22 @@ def force_edit_only():
         except Exception:
             pass
 
+# Status bhejne par purana card pehle delete hoga, phir naya aayega
 def recreate_single_card(chat_id):
     with edit_lock:
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
-        text = format_all_workers_card()
 
-        # Pehle try karo existing card ko edit karne ka (Smooth & Zero flicker)
+        # 1. Purana card pehle chat se poori tarah remove karo
         if old_msg_id:
             try:
-                bot.edit_message_text(text, chat_id=old_chat_id, message_id=old_msg_id, parse_mode="HTML")
-                return
+                bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
             except Exception:
                 pass
+            DATA["msg_id"] = None
 
-        # Agar card nahi tha, tabhi naya card bhejkar lock karo
+        # 2. Fresh new card bhej kar uska message_id track karo
+        text = format_all_workers_card()
         try:
             sent = bot.send_message(
                 chat_id,
@@ -281,27 +282,13 @@ def heartbeat_check_loop():
 
 # --- Telegram Handlers ---
 
-# /start dabane par ek clean permanent message aayega aur keyboard lock ho jayega
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
-    
-    # Agar pehle se card exist karta hai to usko status se refresh karenge
-    if DATA.get("msg_id"):
-        recreate_single_card(message.chat.id)
-        return
-
-    # Fresh setup: Ek simple message bhej kar keyboard hamesha ke liye screen par bind kar do
-    sent = bot.send_message(
-        message.chat.id,
-        "⚡ <b>Admin Panel Active:</b> Niche diye gaye menu se <code>📊 Status</code> par click karein.",
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
-    )
-    DATA["msg_id"] = sent.message_id
+    recreate_single_card(message.chat.id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -311,6 +298,7 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
+    # Har baar Status dabane par purana card gayab hokar naya card aayega
     if "status" in text:
         recreate_single_card(chat_id)
 
