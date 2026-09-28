@@ -4,7 +4,7 @@ import time
 import threading
 from flask import Flask, request, jsonify
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
 ALLOWED_ADMIN_ID = 5831204930
@@ -59,7 +59,8 @@ def is_authorized(message_or_call):
     return True
 
 def get_admin_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
+    # is_persistent hata diya gaya hai taaki aap menu ko manually close/hide kar sakein
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("📊 Status"))
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
     markup.row(KeyboardButton("⏸️ Cont. Work"), KeyboardButton("▶️ Stop Work"))
@@ -120,13 +121,12 @@ def force_edit_only():
         except Exception:
             pass
 
-# Status bhejne par purana card pehle delete hoga, phir naya aayega
 def recreate_single_card(chat_id):
     with edit_lock:
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
 
-        # 1. Purana card pehle chat se poori tarah remove karo
+        # Pehle purana card delete hoga
         if old_msg_id:
             try:
                 bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
@@ -134,7 +134,7 @@ def recreate_single_card(chat_id):
                 pass
             DATA["msg_id"] = None
 
-        # 2. Fresh new card bhej kar uska message_id track karo
+        # Naya card generate karke bhejega
         text = format_all_workers_card()
         try:
             sent = bot.send_message(
@@ -282,13 +282,19 @@ def heartbeat_check_loop():
 
 # --- Telegram Handlers ---
 
+# /start dabane par KOI CARD YA TEXT NAHI AAYEGA, sirf menu open hoga
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
-    recreate_single_card(message.chat.id)
+    # Sirf menu show karne ke liye reply markup set kar diya
+    bot.send_message(
+        message.chat.id,
+        "⌨️ Menu Open",
+        reply_markup=get_admin_keyboard()
+    )
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -298,7 +304,7 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
-    # Har baar Status dabane par purana card gayab hokar naya card aayega
+    # SIRF STATUS CLICK KARNE PAR CARD AAYEGA
     if "status" in text:
         recreate_single_card(chat_id)
 
