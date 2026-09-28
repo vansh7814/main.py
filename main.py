@@ -59,7 +59,7 @@ def is_authorized(message_or_call):
     return True
 
 def get_admin_keyboard():
-    # persistent=True aur is_persistent=True se Telegram keyboard ko hamesha fix rakhta hai
+    # Persistent keyboard jo delete hone par bhi screen se nahi hatega
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
     markup.row(KeyboardButton("📊 Status"))
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
@@ -204,6 +204,7 @@ def handle_event():
             "manage": 0
         }
 
+    # Watcher events
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
         for ev in events_list:
@@ -212,6 +213,8 @@ def handle_event():
                 DATA["workers"][worker]["used_json"] += 1
             elif ev_type == "done":
                 DATA["workers"][worker]["done"] += 1
+
+    # Phone/Email bot events
     else:
         ev_type = req_data.get("event", "")
         ev_status = req_data.get("status", "")
@@ -295,16 +298,14 @@ def handle_start(message):
 
     DATA["chat_id"] = message.chat.id
 
-    # 1. Pehle Status Card bhejenge jiske sath keyboard hamesha lock rahega
-    recreate_single_card(message.chat.id)
-
-    # 2. Welcome text alag message mein aayega
+    # /start par CARD NAHI AAYEGA, sirf welcome message aur buttons aayenge
     sent = bot.send_message(
         message.chat.id,
         "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
     )
-    # 7 second baad sirf yeh welcome text delete hoga, menu neeche hamesha active rahega!
+    # 7 seconds baad sirf welcome text delete ho jayega, buttons niche fix rahenge
     delete_msg_after_delay(message.chat.id, sent.message_id, 7)
 
 @bot.message_handler(func=lambda msg: True)
@@ -315,6 +316,7 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
+    # SIRF STATUS CLICK PAR CARD AAYEGA
     if "status" in text:
         recreate_single_card(chat_id)
 
@@ -346,7 +348,7 @@ def handle_menu_actions(message):
             stats["data_type"] = None
             stats["allotted"] = None
         
-        sent = bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nMagchya sarv divasache counts clear jhale ahet aani 0 set jhale.", parse_mode="HTML")
+        sent = bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nSabhi purane counts reset ho gaye.", parse_mode="HTML")
         delete_msg_after_delay(chat_id, sent.message_id, 7)
         force_edit_only()
 
