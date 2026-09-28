@@ -133,7 +133,6 @@ def recreate_single_card(chat_id):
 
         text = format_all_workers_card()
         try:
-            # Status card ke sath keyboard bind rahega jo kabhi gayab nahi hoga
             sent = bot.send_message(
                 chat_id,
                 text,
@@ -288,6 +287,7 @@ def heartbeat_check_loop():
 
 # --- Telegram Handlers ---
 
+# /start bhejte hi user ka input message delete hoga aur buttons fix ho jayenge (koi extra message nahi)
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
@@ -295,24 +295,25 @@ def handle_start(message):
 
     DATA["chat_id"] = message.chat.id
 
-    # 1. Telegram bot menu commands register kar diye
     try:
         bot.set_my_commands([
             BotCommand("status", "📊 Show Live Status"),
-            BotCommand("start", "Restart Bot Menu")
+            BotCommand("start", "Show Control Buttons")
         ])
     except Exception:
         pass
 
-    # 2. Welcome text bheja (BINA reply_markup ke, taaki delete hone par keyboard na ude)
-    sent = bot.send_message(
+    # Ek momentary invisible message se keyboard lock karke turant delete kar dega
+    temp = bot.send_message(
         message.chat.id,
-        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:\n👉 <code>Status</code> click karein monitor dekhne ke liye.",
-        parse_mode="HTML"
+        "⚙️",
+        reply_markup=get_admin_keyboard()
     )
-
-    # 3. 7 sec baad sirf yeh message delete hoga, keyboard ya buttons par koi asar nahi hoga
-    delete_msg_after_delay(message.chat.id, sent.message_id, 7)
+    try:
+        bot.delete_message(message.chat.id, temp.message_id)
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -322,7 +323,7 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
-    # SIRF STATUS CLICK PAR CARD AAYEGA AUR KEYBOARD PERMANENT REH JAYEGA
+    # STATUS PAR HI CARD AAYEGA
     if "status" in text:
         recreate_single_card(chat_id)
 
