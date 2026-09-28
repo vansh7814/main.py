@@ -59,7 +59,8 @@ def is_authorized(message_or_call):
     return True
 
 def get_admin_keyboard():
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    # persistent=True aur is_persistent=True se Telegram keyboard ko hamesha fix rakhta hai
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
     markup.row(KeyboardButton("📊 Status"))
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
     markup.row(KeyboardButton("⏸️ Cont. Work"), KeyboardButton("▶️ Stop Work"))
@@ -285,19 +286,25 @@ def heartbeat_check_loop():
             pass
         time.sleep(5)
 
+# --- Telegram Handlers ---
+
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
+
+    # 1. Pehle Status Card bhejenge jiske sath keyboard hamesha lock rahega
+    recreate_single_card(message.chat.id)
+
+    # 2. Welcome text alag message mein aayega
     sent = bot.send_message(
         message.chat.id,
         "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:",
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
+        parse_mode="HTML"
     )
-    # 7 seconds nantar auto-delete
+    # 7 second baad sirf yeh welcome text delete hoga, menu neeche hamesha active rahega!
     delete_msg_after_delay(message.chat.id, sent.message_id, 7)
 
 @bot.message_handler(func=lambda msg: True)
@@ -327,7 +334,6 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # NEW DAY: Sarv juney counts reset karnyasathi
     elif text in ["new day", "/newday"]:
         DATA["day_token"] = str(int(time.time()))
         for w, stats in DATA["workers"].items():
@@ -344,7 +350,6 @@ def handle_menu_actions(message):
         delete_msg_after_delay(chat_id, sent.message_id, 7)
         force_edit_only()
 
-    # WKND WORK: Sarv workers cha poorna report dakhvinyasathi
     elif text in ["wknd work", "/wkndwork"]:
         report_lines = ["📋 <b>WORKERS SUMMARY REPORT:</b>\n"]
         for worker_name, stats in DATA["workers"].items():
