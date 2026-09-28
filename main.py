@@ -4,7 +4,7 @@ import time
 import threading
 from flask import Flask, request, jsonify
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
 ALLOWED_ADMIN_ID = 5831204930
@@ -59,7 +59,6 @@ def is_authorized(message_or_call):
     return True
 
 def get_admin_keyboard():
-    # Persistent keyboard jo delete hone par bhi screen se nahi hatega
     markup = ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
     markup.row(KeyboardButton("📊 Status"))
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
@@ -134,6 +133,7 @@ def recreate_single_card(chat_id):
 
         text = format_all_workers_card()
         try:
+            # Status card ke sath keyboard bind rahega jo kabhi gayab nahi hoga
             sent = bot.send_message(
                 chat_id,
                 text,
@@ -204,7 +204,6 @@ def handle_event():
             "manage": 0
         }
 
-    # Watcher events
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
         for ev in events_list:
@@ -213,8 +212,6 @@ def handle_event():
                 DATA["workers"][worker]["used_json"] += 1
             elif ev_type == "done":
                 DATA["workers"][worker]["done"] += 1
-
-    # Phone/Email bot events
     else:
         ev_type = req_data.get("event", "")
         ev_status = req_data.get("status", "")
@@ -298,14 +295,23 @@ def handle_start(message):
 
     DATA["chat_id"] = message.chat.id
 
-    # /start par CARD NAHI AAYEGA, sirf welcome message aur buttons aayenge
+    # 1. Telegram bot menu commands register kar diye
+    try:
+        bot.set_my_commands([
+            BotCommand("status", "📊 Show Live Status"),
+            BotCommand("start", "Restart Bot Menu")
+        ])
+    except Exception:
+        pass
+
+    # 2. Welcome text bheja (BINA reply_markup ke, taaki delete hone par keyboard na ude)
     sent = bot.send_message(
         message.chat.id,
-        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:",
-        parse_mode="HTML",
-        reply_markup=get_admin_keyboard()
+        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:\n👉 <code>Status</code> click karein monitor dekhne ke liye.",
+        parse_mode="HTML"
     )
-    # 7 seconds baad sirf welcome text delete ho jayega, buttons niche fix rahenge
+
+    # 3. 7 sec baad sirf yeh message delete hoga, keyboard ya buttons par koi asar nahi hoga
     delete_msg_after_delay(message.chat.id, sent.message_id, 7)
 
 @bot.message_handler(func=lambda msg: True)
@@ -316,7 +322,7 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
-    # SIRF STATUS CLICK PAR CARD AAYEGA
+    # SIRF STATUS CLICK PAR CARD AAYEGA AUR KEYBOARD PERMANENT REH JAYEGA
     if "status" in text:
         recreate_single_card(chat_id)
 
