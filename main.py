@@ -4,7 +4,7 @@ import time
 import threading
 from flask import Flask, request, jsonify
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 ADMIN_BOT_TOKEN = "8351462114:AAFOUc8Mr3K1SYezCp1_2-6kXomE4Vk0ZQs"
 ALLOWED_ADMIN_ID = 5831204930
@@ -124,14 +124,17 @@ def recreate_single_card(chat_id):
     with edit_lock:
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
+        text = format_all_workers_card()
 
+        # Pehle try karo existing card ko edit karne ka (Smooth & Zero flicker)
         if old_msg_id:
             try:
-                bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
+                bot.edit_message_text(text, chat_id=old_chat_id, message_id=old_msg_id, parse_mode="HTML")
+                return
             except Exception:
                 pass
 
-        text = format_all_workers_card()
+        # Agar card nahi tha, tabhi naya card bhejkar lock karo
         try:
             sent = bot.send_message(
                 chat_id,
@@ -144,15 +147,6 @@ def recreate_single_card(chat_id):
             DATA["msg_id"] = sent.message_id
         except Exception as e:
             print(f"Recreate error: {e}")
-
-def delete_msg_after_delay(chat_id, message_id, delay_seconds=7):
-    def worker():
-        time.sleep(delay_seconds)
-        try:
-            bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-    threading.Thread(target=worker, daemon=True).start()
 
 def build_worker_selection_markup(action_type, selected_workers):
     markup = InlineKeyboardMarkup()
@@ -287,33 +281,27 @@ def heartbeat_check_loop():
 
 # --- Telegram Handlers ---
 
-# /start bhejte hi user ka input message delete hoga aur buttons fix ho jayenge (koi extra message nahi)
+# /start dabane par ek clean permanent message aayega aur keyboard lock ho jayega
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
+    
+    # Agar pehle se card exist karta hai to usko status se refresh karenge
+    if DATA.get("msg_id"):
+        recreate_single_card(message.chat.id)
+        return
 
-    try:
-        bot.set_my_commands([
-            BotCommand("status", "📊 Show Live Status"),
-            BotCommand("start", "Show Control Buttons")
-        ])
-    except Exception:
-        pass
-
-    # Ek momentary invisible message se keyboard lock karke turant delete kar dega
-    temp = bot.send_message(
+    # Fresh setup: Ek simple message bhej kar keyboard hamesha ke liye screen par bind kar do
+    sent = bot.send_message(
         message.chat.id,
-        "⚙️",
+        "⚡ <b>Admin Panel Active:</b> Niche diye gaye menu se <code>📊 Status</code> par click karein.",
+        parse_mode="HTML",
         reply_markup=get_admin_keyboard()
     )
-    try:
-        bot.delete_message(message.chat.id, temp.message_id)
-        bot.delete_message(message.chat.id, message.message_id)
-    except Exception:
-        pass
+    DATA["msg_id"] = sent.message_id
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
@@ -323,7 +311,6 @@ def handle_menu_actions(message):
     text = message.text.strip().lower()
     chat_id = message.chat.id
 
-    # STATUS PAR HI CARD AAYEGA
     if "status" in text:
         recreate_single_card(chat_id)
 
@@ -332,7 +319,7 @@ def handle_menu_actions(message):
         if online_list:
             msg = "<b>🟢 ONLINE WORKERS:</b>\n\n" + "\n".join([f"🟢 {w}" for w in online_list])
         else:
-            msg = "⚠️ <b>Filhal koi worker online nahi hai! (Watcher chalu nahi hai)</b>"
+            msg = "⚠️ <b>Filhal koi worker online nahi hai!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
     elif "offline" in text:
@@ -355,8 +342,7 @@ def handle_menu_actions(message):
             stats["data_type"] = None
             stats["allotted"] = None
         
-        sent = bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nSabhi purane counts reset ho gaye.", parse_mode="HTML")
-        delete_msg_after_delay(chat_id, sent.message_id, 7)
+        bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nCounts reset to 0.", parse_mode="HTML")
         force_edit_only()
 
     elif text in ["wknd work", "/wkndwork"]:
