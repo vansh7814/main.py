@@ -12,17 +12,17 @@ ALLOWED_ADMIN_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-# State data: Data type aur allotment default None (No Data Prov.)
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "clean_rdp_triggered": False,
+    "day_token": str(int(time.time())),
     "paused_workers": set(),
     "workers": {
         "vansh": {
             "mode": "Offline 🔴",
-            "last_seen_watcher": 0,  # Sirf Watcher ke /poll se update hoga
-            "data_type": None,       # None hone par "No Data Prov." aayega
+            "last_seen_watcher": 0,
+            "data_type": None,
             "allotted": None,
             "taken": 0,
             "used_json": 0,
@@ -72,7 +72,6 @@ def format_all_workers_card():
         data_type = stats.get("data_type")
         allotted = stats.get("allotted")
 
-        # Admin allotment check
         if data_type and allotted is not None:
             allotted_line = f"📦 <b>{data_type} allotted:</b> {allotted}"
         else:
@@ -146,6 +145,15 @@ def recreate_single_card(chat_id):
         except Exception as e:
             print(f"Recreate error: {e}")
 
+def delete_msg_after_delay(chat_id, message_id, delay_seconds=7):
+    def worker():
+        time.sleep(delay_seconds)
+        try:
+            bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+    threading.Thread(target=worker, daemon=True).start()
+
 def build_worker_selection_markup(action_type, selected_workers):
     markup = InlineKeyboardMarkup()
     for w_name in DATA["workers"].keys():
@@ -171,9 +179,6 @@ def build_worker_selection_markup(action_type, selected_workers):
 def home():
     return "Admin & Watcher Central API Active!"
 
-# ══════════════════════════════════════════════════════
-# EVENT HANDLER: SIRF COUNTS (ONLINE TOUCH NAHI HOGA)
-# ══════════════════════════════════════════════════════
 @app.route('/event', methods=['GET', 'POST'])
 def handle_event():
     if request.method == 'GET':
@@ -198,7 +203,6 @@ def handle_event():
             "manage": 0
         }
 
-    # Watcher se aane wala batch
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
         for ev in events_list:
@@ -207,8 +211,6 @@ def handle_event():
                 DATA["workers"][worker]["used_json"] += 1
             elif ev_type == "done":
                 DATA["workers"][worker]["done"] += 1
-
-    # Phone/VisiHost email bot se aane wala single event
     else:
         ev_type = req_data.get("event", "")
         ev_status = req_data.get("status", "")
@@ -227,9 +229,6 @@ def handle_event():
     force_edit_only()
     return jsonify({"success": True}), 200
 
-# ══════════════════════════════════════════════════════
-# WATCHER POLL HANDLER: SIRF YAHAN SE WORKER ONLINE HOGA
-# ══════════════════════════════════════════════════════
 @app.route('/poll', methods=['POST'])
 def handle_poll():
     req_data = request.json or {}
@@ -250,7 +249,6 @@ def handle_poll():
             "manage": 0
         }
 
-    # Watcher active hai tabhi Online banega
     DATA["workers"][worker]["mode"] = "Online 🟢"
     DATA["workers"][worker]["last_seen_watcher"] = time.time()
 
@@ -268,10 +266,10 @@ def handle_poll():
         "stop_watcher": False,
         "delete_done_files": True,
         "delete_used_json": False,
+        "day_token": DATA.get("day_token"),
         "bm2_change": None
     }), 200
 
-# Watcher Heartbeat Loop: 20s me poll na aaye to Offline
 def heartbeat_check_loop():
     while True:
         try:
@@ -287,98 +285,33 @@ def heartbeat_check_loop():
             pass
         time.sleep(5)
 
-# --- Telegram Handlers ---
-
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
-    bot.send_message(
+    sent = bot.send_message(
         message.chat.id,
-        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:\n\n"
-        "👉 <code>/allot vansh A 50</code> (Data allot karne ke liye)\n"
-        "👉 <code>/cleardata vansh</code> (No Data Prov. karne ke liye)",
+        "👋 <b>Welcome Admin!</b>\n\nNiche diye gaye buttons ya commands use karein:",
         parse_mode="HTML",
         reply_markup=get_admin_keyboard()
     )
-
-# Command: /allot <worker> <datatype> <count>
-@bot.message_handler(commands=['allot'])
-def handle_allot(message):
-    if not is_authorized(message):
-        return
-
-    parts = message.text.split()
-    if len(parts) < 4:
-        bot.send_message(
-            message.chat.id,
-            "⚠️ <b>Galat Format!</b> Aise bhejein:\n<code>/allot vansh A 50</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    worker = normalize_worker_name(parts[1])
-    data_type = parts[2].upper()
-    try:
-        count = int(parts[3])
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Count ek number hona chahiye jaise 50, 100", parse_mode="HTML")
-        return
-
-    if worker not in DATA["workers"]:
-        DATA["workers"][worker] = {
-            "mode": "Offline 🔴",
-            "last_seen_watcher": 0,
-            "data_type": None,
-            "allotted": None,
-            "taken": 0,
-            "used_json": 0,
-            "done": 0,
-            "login_failed": 0,
-            "wrong_pass": 0,
-            "manage": 0
-        }
-
-    DATA["workers"][worker]["data_type"] = data_type
-    DATA["workers"][worker]["allotted"] = count
-
-    bot.send_message(
-        message.chat.id,
-        f"✅ <b>{worker.upper()}</b> ko <b>{data_type}</b> allot kar diya: <b>{count}</b>",
-        parse_mode="HTML"
-    )
-    force_edit_only()
-
-# Command: /cleardata <worker>
-@bot.message_handler(commands=['cleardata'])
-def handle_cleardata(message):
-    if not is_authorized(message):
-        return
-
-    parts = message.text.split()
-    worker = normalize_worker_name(parts[1]) if len(parts) > 1 else "vansh"
-
-    if worker in DATA["workers"]:
-        DATA["workers"][worker]["data_type"] = None
-        DATA["workers"][worker]["allotted"] = None
-
-    bot.send_message(message.chat.id, f"✅ <b>{worker.upper()}</b> ka data clear! (No Data Prov.)", parse_mode="HTML")
-    force_edit_only()
+    # 7 seconds nantar auto-delete
+    delete_msg_after_delay(message.chat.id, sent.message_id, 7)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_actions(message):
     if not is_authorized(message):
         return
 
-    text = message.text.strip()
+    text = message.text.strip().lower()
     chat_id = message.chat.id
 
-    if "Status" in text:
+    if "status" in text:
         recreate_single_card(chat_id)
 
-    elif "🟢 Online" in text or text == "Online":
+    elif "online" in text:
         online_list = [w.upper() for w, stats in DATA["workers"].items() if "Online" in stats.get("mode", "")]
         if online_list:
             msg = "<b>🟢 ONLINE WORKERS:</b>\n\n" + "\n".join([f"🟢 {w}" for w in online_list])
@@ -386,7 +319,7 @@ def handle_menu_actions(message):
             msg = "⚠️ <b>Filhal koi worker online nahi hai! (Watcher chalu nahi hai)</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    elif "🔴 Offline" in text or text == "Offline":
+    elif "offline" in text:
         offline_list = [w.upper() for w, stats in DATA["workers"].items() if "Offline" in stats.get("mode", "")]
         if offline_list:
             msg = "<b>🔴 OFFLINE WORKERS:</b>\n\n" + "\n".join([f"🔴 {w}" for w in offline_list])
@@ -394,17 +327,57 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    elif "Stop Work" in text:
+    # NEW DAY: Sarv juney counts reset karnyasathi
+    elif text in ["new day", "/newday"]:
+        DATA["day_token"] = str(int(time.time()))
+        for w, stats in DATA["workers"].items():
+            stats["taken"] = 0
+            stats["used_json"] = 0
+            stats["done"] = 0
+            stats["login_failed"] = 0
+            stats["wrong_pass"] = 0
+            stats["manage"] = 0
+            stats["data_type"] = None
+            stats["allotted"] = None
+        
+        sent = bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nMagchya sarv divasache counts clear jhale ahet aani 0 set jhale.", parse_mode="HTML")
+        delete_msg_after_delay(chat_id, sent.message_id, 7)
+        force_edit_only()
+
+    # WKND WORK: Sarv workers cha poorna report dakhvinyasathi
+    elif text in ["wknd work", "/wkndwork"]:
+        report_lines = ["📋 <b>WORKERS SUMMARY REPORT:</b>\n"]
+        for worker_name, stats in DATA["workers"].items():
+            data_type = stats.get("data_type") or "None"
+            allotted = stats.get("allotted") if stats.get("allotted") is not None else 0
+            taken = stats.get("taken", 0)
+            used_json = stats.get("used_json", 0)
+            done = stats.get("done", 0)
+            failed = stats.get("login_failed", 0)
+            wrong = stats.get("wrong_pass", 0)
+            manage = stats.get("manage", 0)
+            status_mode = stats.get("mode", "Offline 🔴")
+
+            report_lines.append(
+                f"👤 <b>Worker:</b> {worker_name.upper()} ({status_mode})\n"
+                f"📦 <b>Allotted:</b> {allotted} (Type: {data_type})\n"
+                f"📥 <b>Taken:</b> {taken} | 📝 <b>Used Json:</b> {used_json}\n"
+                f"✅ <b>Done:</b> {done} | ❌ <b>Failed:</b> {failed} | 🔑 <b>Wrong:</b> {wrong} | 🔧 <b>Manage:</b> {manage}\n"
+                f"────────────────────"
+            )
+        bot.send_message(chat_id, "\n".join(report_lines), parse_mode="HTML")
+
+    elif "stop work" in text:
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("stop", SELECTIONS[chat_id])
         bot.send_message(chat_id, "🛑 <b>Kiska kaam rokna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    elif "Cont. Work" in text:
+    elif "cont. work" in text:
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    elif "Clean RDP" in text:
+    elif "clean rdp" in text:
         DATA["clean_rdp_triggered"] = True
         bot.send_message(chat_id, "🧹 <b>Clean Signal Sent:</b> RDP clean will run within 5 seconds on all active watchers.", parse_mode="HTML")
 
