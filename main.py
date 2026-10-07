@@ -16,6 +16,7 @@ DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "clean_rdp_triggered": False,
+    "day_started": False,  # Din shuru ache kina tar global state
     "day_token": str(int(time.time())),
     "paused_workers": set(),
     "workers": {
@@ -59,12 +60,11 @@ def is_authorized(message_or_call):
     return True
 
 def get_admin_keyboard():
-    # is_persistent hata diya gaya hai taaki aap menu ko manually close/hide kar sakein
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(KeyboardButton("▶️ Start. Work"), KeyboardButton("⏸️ End Day"))
+    markup.row(KeyboardButton("🧹 End day+ clean rdp"), KeyboardButton("🔎 See Worker. Data"))
     markup.row(KeyboardButton("📊 Status"))
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
-    markup.row(KeyboardButton("⏸️ Cont. Work"), KeyboardButton("▶️ Stop Work"))
-    markup.row(KeyboardButton("🧹 Clean RDP"))
     return markup
 
 def format_all_workers_card():
@@ -86,9 +86,11 @@ def format_all_workers_card():
         manage = stats.get("manage", 0)
         status_mode = stats.get('mode', 'Offline 🔴')
 
+        day_text = "🟢 ACTIVE" if DATA.get("day_started") else "⏸️ STOPPED"
+
         card = (
             f"📊 <b>Live Monitor — {worker_name.upper()}</b>\n\n"
-            f"🌐 <b>Network:</b> {status_mode}\n"
+            f"🌐 <b>Network:</b> {status_mode} | <b>Day:</b> {day_text}\n"
             f"{allotted_line}\n"
             f"────────────────────\n"
             f"📥 <b>Taken:</b> {taken}\n"
@@ -126,7 +128,6 @@ def recreate_single_card(chat_id):
         old_msg_id = DATA.get("msg_id")
         old_chat_id = DATA.get("chat_id") or chat_id
 
-        # Pehle purana card delete hoga
         if old_msg_id:
             try:
                 bot.delete_message(chat_id=old_chat_id, message_id=old_msg_id)
@@ -134,7 +135,6 @@ def recreate_single_card(chat_id):
                 pass
             DATA["msg_id"] = None
 
-        # Naya card generate karke bhejega
         text = format_all_workers_card()
         try:
             sent = bot.send_message(
@@ -149,30 +149,25 @@ def recreate_single_card(chat_id):
         except Exception as e:
             print(f"Recreate error: {e}")
 
-def build_worker_selection_markup(action_type, selected_workers):
-    markup = InlineKeyboardMarkup()
-    for w_name in DATA["workers"].keys():
-        is_checked = w_name in selected_workers
-        box = "☑️" if is_checked else "⬜"
-        btn_text = f"{box} {w_name.upper()}"
-        callback_data = f"toggle:{action_type}:{w_name}"
-        markup.add(InlineKeyboardButton(btn_text, callback_data=callback_data))
-
-    if action_type == "stop":
-        markup.row(
-            InlineKeyboardButton("🛑 All Stop", callback_data="exec:stop:all"),
-            InlineKeyboardButton("🛑 Sel. Stop", callback_data="exec:stop:sel")
-        )
-    else:
-        markup.row(
-            InlineKeyboardButton("▶️ All Cont.", callback_data="exec:cont:all"),
-            InlineKeyboardButton("▶️ Sel. Cont.", callback_data="exec:cont:sel")
-        )
-    return markup
-
 @app.route('/')
 def home():
     return "Admin & Watcher Central API Active!"
+
+# Worker bot eikhan theke check korbe din shuru hoyeche kina
+@app.route('/check_day', methods=['GET', 'POST'])
+def check_day():
+    req_data = request.args if request.method == 'GET' else (request.json or {})
+    raw_worker = req_data.get("user_id") or req_data.get("worker_name") or "vansh"
+    worker = normalize_worker_name(raw_worker)
+
+    is_paused = (worker in DATA["paused_workers"])
+    is_allowed = DATA.get("day_started", False) and not is_paused
+
+    return jsonify({
+        "day_started": DATA.get("day_started", False),
+        "work_allowed": is_allowed,
+        "clean_rdp": DATA.get("clean_rdp_triggered", False)
+    }), 200
 
 @app.route('/event', methods=['GET', 'POST'])
 def handle_event():
@@ -197,6 +192,11 @@ def handle_event():
             "wrong_pass": 0,
             "manage": 0
         }
+
+    # Data type update event asle
+    incoming_data_type = req_data.get("data_type")
+    if incoming_data_type:
+        DATA["workers"][worker]["data_type"] = incoming_data_type
 
     events_list = req_data.get("events", [])
     if isinstance(events_list, list) and events_list:
@@ -248,9 +248,7 @@ def handle_poll():
     DATA["workers"][worker]["last_seen_watcher"] = time.time()
 
     do_clean = DATA.get("clean_rdp_triggered", False)
-    DATA["clean_rdp_triggered"] = False
-
-    is_paused = (worker in DATA["paused_workers"])
+    is_paused = (worker in DATA["paused_workers"]) or not DATA.get("day_started", False)
 
     return jsonify({
         "deletes": [],
@@ -262,6 +260,7 @@ def handle_poll():
         "delete_done_files": True,
         "delete_used_json": False,
         "day_token": DATA.get("day_token"),
+        "day_started": DATA.get("day_started", False),
         "bm2_change": None
     }), 200
 
@@ -282,14 +281,12 @@ def heartbeat_check_loop():
 
 # --- Telegram Handlers ---
 
-# /start dabane par KOI CARD YA TEXT NAHI AAYEGA, sirf menu open hoga
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start(message):
     if not is_authorized(message):
         return
 
     DATA["chat_id"] = message.chat.id
-    # Sirf menu show karne ke liye reply markup set kar diya
     bot.send_message(
         message.chat.id,
         "⌨️ Menu Open",
@@ -301,14 +298,73 @@ def handle_menu_actions(message):
     if not is_authorized(message):
         return
 
-    text = message.text.strip().lower()
+    text = message.text.strip()
+    text_lower = text.lower()
     chat_id = message.chat.id
 
-    # SIRF STATUS CLICK KARNE PAR CARD AAYEGA
-    if "status" in text:
+    # 1. START WORK
+    if "start. work" in text_lower or text_lower == "▶️ start. work":
+        DATA["day_started"] = True
+        DATA["clean_rdp_triggered"] = False
+        DATA["paused_workers"].clear()
+        bot.send_message(
+            chat_id,
+            "▶️ <b>DIN SHURU HO GAYA HAI!</b>\n\nWorkers ekhon Email Bot use korte parbe, email pabe ebong shob feature on hoyeche.",
+            parse_mode="HTML"
+        )
+        force_edit_only()
+
+    # 2. END DAY
+    elif "end day" in text_lower and "clean" not in text_lower:
+        DATA["day_started"] = False
+        bot.send_message(
+            chat_id,
+            "⏸️ <b>DIN END KORA HOYECHE!</b>\n\nWorkers er jonno shob access bondho kora hoyeche.",
+            parse_mode="HTML"
+        )
+        force_edit_only()
+
+    # 3. END DAY + CLEAN RDP
+    elif "end day+ clean rdp" in text_lower or "clean rdp" in text_lower:
+        DATA["day_started"] = False
+        DATA["clean_rdp_triggered"] = True
+        bot.send_message(
+            chat_id,
+            "🧹 <b>DIN END + RDP CLEAN SIGNAL SENT!</b>\n\nDin off kora hoyeche ebong worker system er Chrome/Downloads folder clean hoye jabe.",
+            parse_mode="HTML"
+        )
+        force_edit_only()
+
+    # 4. SEE WORKER DATA
+    elif "see worker. data" in text_lower or "see worker" in text_lower:
+        report_lines = ["🔎 <b>WORKER DATA & ASSIGNMENT REPORT:</b>\n"]
+        for worker_name, stats in DATA["workers"].items():
+            data_type = stats.get("data_type") or "Not Specified"
+            allotted = stats.get("allotted") if stats.get("allotted") is not None else "N/A"
+            taken = stats.get("taken", 0)
+            used_json = stats.get("used_json", 0)
+            done = stats.get("done", 0)
+            failed = stats.get("login_failed", 0)
+            wrong = stats.get("wrong_pass", 0)
+            manage = stats.get("manage", 0)
+            status_mode = stats.get("mode", "Offline 🔴")
+
+            report_lines.append(
+                f"👤 <b>Worker:</b> {worker_name.upper()} ({status_mode})\n"
+                f"📁 <b>Current Data Working:</b> {data_type}\n"
+                f"📦 <b>Allotted:</b> {allotted}\n"
+                f"📥 <b>Taken:</b> {taken} | 📝 <b>Used Json:</b> {used_json}\n"
+                f"✅ <b>Done:</b> {done} | ❌ <b>Failed:</b> {failed} | 🔑 <b>Wrong:</b> {wrong} | 🔧 <b>Manage:</b> {manage}\n"
+                f"────────────────────"
+            )
+        bot.send_message(chat_id, "\n".join(report_lines), parse_mode="HTML")
+
+    # 5. STATUS
+    elif "status" in text_lower:
         recreate_single_card(chat_id)
 
-    elif "online" in text:
+    # 6. ONLINE
+    elif "online" in text_lower:
         online_list = [w.upper() for w, stats in DATA["workers"].items() if "Online" in stats.get("mode", "")]
         if online_list:
             msg = "<b>🟢 ONLINE WORKERS:</b>\n\n" + "\n".join([f"🟢 {w}" for w in online_list])
@@ -316,7 +372,8 @@ def handle_menu_actions(message):
             msg = "⚠️ <b>Filhal koi worker online nahi hai!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    elif "offline" in text:
+    # 7. OFFLINE
+    elif "offline" in text_lower:
         offline_list = [w.upper() for w, stats in DATA["workers"].items() if "Offline" in stats.get("mode", "")]
         if offline_list:
             msg = "<b>🔴 OFFLINE WORKERS:</b>\n\n" + "\n".join([f"🔴 {w}" for w in offline_list])
@@ -324,7 +381,7 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    elif text in ["new day", "/newday"]:
+    elif text_lower in ["new day", "/newday"]:
         DATA["day_token"] = str(int(time.time()))
         for w, stats in DATA["workers"].items():
             stats["taken"] = 0
@@ -338,105 +395,6 @@ def handle_menu_actions(message):
         
         bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nCounts reset to 0.", parse_mode="HTML")
         force_edit_only()
-
-    elif text in ["wknd work", "/wkndwork"]:
-        report_lines = ["📋 <b>WORKERS SUMMARY REPORT:</b>\n"]
-        for worker_name, stats in DATA["workers"].items():
-            data_type = stats.get("data_type") or "None"
-            allotted = stats.get("allotted") if stats.get("allotted") is not None else 0
-            taken = stats.get("taken", 0)
-            used_json = stats.get("used_json", 0)
-            done = stats.get("done", 0)
-            failed = stats.get("login_failed", 0)
-            wrong = stats.get("wrong_pass", 0)
-            manage = stats.get("manage", 0)
-            status_mode = stats.get("mode", "Offline 🔴")
-
-            report_lines.append(
-                f"👤 <b>Worker:</b> {worker_name.upper()} ({status_mode})\n"
-                f"📦 <b>Allotted:</b> {allotted} (Type: {data_type})\n"
-                f"📥 <b>Taken:</b> {taken} | 📝 <b>Used Json:</b> {used_json}\n"
-                f"✅ <b>Done:</b> {done} | ❌ <b>Failed:</b> {failed} | 🔑 <b>Wrong:</b> {wrong} | 🔧 <b>Manage:</b> {manage}\n"
-                f"────────────────────"
-            )
-        bot.send_message(chat_id, "\n".join(report_lines), parse_mode="HTML")
-
-    elif "stop work" in text:
-        SELECTIONS[chat_id] = set()
-        markup = build_worker_selection_markup("stop", SELECTIONS[chat_id])
-        bot.send_message(chat_id, "🛑 <b>Kiska kaam rokna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
-
-    elif "cont. work" in text:
-        SELECTIONS[chat_id] = set()
-        markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
-        bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
-
-    elif "clean rdp" in text:
-        DATA["clean_rdp_triggered"] = True
-        bot.send_message(chat_id, "🧹 <b>Clean Signal Sent:</b> RDP clean will run within 5 seconds on all active watchers.", parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    if not is_authorized(call):
-        return
-
-    chat_id = call.message.chat.id
-    data_parts = call.data.split(":")
-    cmd = data_parts[0]
-
-    if chat_id not in SELECTIONS:
-        SELECTIONS[chat_id] = set()
-
-    if cmd == "toggle":
-        action_type = data_parts[1]
-        worker_name = data_parts[2]
-
-        if worker_name in SELECTIONS[chat_id]:
-            SELECTIONS[chat_id].remove(worker_name)
-        else:
-            SELECTIONS[chat_id].add(worker_name)
-
-        new_markup = build_worker_selection_markup(action_type, SELECTIONS[chat_id])
-        try:
-            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=new_markup)
-        except Exception:
-            pass
-        bot.answer_callback_query(call.id)
-
-    elif cmd == "exec":
-        action_type = data_parts[1]
-        target = data_parts[2]
-
-        if action_type == "stop":
-            if target == "all":
-                for w in DATA["workers"].keys():
-                    DATA["paused_workers"].add(w)
-                bot.edit_message_text("🛑 <b>Sabhi workers ka kaam STOP kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
-            elif target == "sel":
-                selected = SELECTIONS.get(chat_id, set())
-                if not selected:
-                    bot.answer_callback_query(call.id, "⚠️ Pehle kisi worker ko select karein!", show_alert=True)
-                    return
-                for w in selected:
-                    DATA["paused_workers"].add(w)
-                names = ", ".join([s.upper() for s in selected])
-                bot.edit_message_text(f"🛑 <b>In workers ka kaam STOP kar diya gaya hai:</b>\n{names}", chat_id, call.message.message_id, parse_mode="HTML")
-
-        elif action_type == "cont":
-            if target == "all":
-                DATA["paused_workers"].clear()
-                bot.edit_message_text("▶️ <b>Sabhi workers ka kaam RESUME kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
-            elif target == "sel":
-                selected = SELECTIONS.get(chat_id, set())
-                if not selected:
-                    bot.answer_callback_query(call.id, "⚠️ Pehle kisi worker ko select karein!", show_alert=True)
-                    return
-                for w in selected:
-                    DATA["paused_workers"].discard(w)
-                names = ", ".join([s.upper() for s in selected])
-                bot.edit_message_text(f"▶️ <b>In workers ka kaam RESUME kar diya gaya hai:</b>\n{names}", chat_id, call.message.message_id, parse_mode="HTML")
-
-        bot.answer_callback_query(call.id)
 
 def start_polling():
     while True:
