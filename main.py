@@ -15,6 +15,7 @@ app = Flask(__name__)
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
+    "see_data_msg_id": None,  # See worker data ke message tracking ke liye
     "clean_rdp_triggered": False,
     "day_started": False,
     "day_token": str(int(time.time())),
@@ -61,17 +62,11 @@ def is_authorized(message_or_call):
 
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    # Row 1
     markup.row(KeyboardButton("📊 Status"))
-    # Row 2
     markup.row(KeyboardButton("▶️ Start. Work"), KeyboardButton("⏸️ End Day"))
-    # Row 3
     markup.row(KeyboardButton("🔎 See Worker. Data"))
-    # Row 4
     markup.row(KeyboardButton("🟢 Online"), KeyboardButton("🔴 Offline"))
-    # Row 5
     markup.row(KeyboardButton("⏸️ Cont. Work"), KeyboardButton("▶️ Pause Work"))
-    # Row 6
     markup.row(KeyboardButton("⏸️ End Day + 🧹 Clean RDP"))
     return markup
 
@@ -156,7 +151,6 @@ def recreate_single_card(chat_id):
         except Exception as e:
             print(f"Recreate error: {e}")
 
-# Helper: Sirf Online workers nikalna
 def get_online_workers():
     current_time = time.time()
     online = []
@@ -165,7 +159,6 @@ def get_online_workers():
             online.append(w)
     return online
 
-# BUILD SELECTION MARKUP (SIRF ONLINE WORKERS KO DIKHAYEGA)
 def build_worker_selection_markup(action_type, selected_workers):
     markup = InlineKeyboardMarkup()
     online_workers = get_online_workers()
@@ -173,8 +166,6 @@ def build_worker_selection_markup(action_type, selected_workers):
     for w_name in online_workers:
         is_checked = w_name in selected_workers
         box = "☑️" if is_checked else "⬜"
-        
-        # Paused hai ya Active
         state_icon = "⏸️" if w_name in DATA["paused_workers"] else "🟢"
         btn_text = f"{box} {state_icon} {w_name.upper()}"
         callback_data = f"toggle:{action_type}:{w_name}"
@@ -380,8 +371,17 @@ def handle_menu_actions(message):
         )
         force_edit_only()
 
-    # 5. SEE WORKER. DATA
+    # 5. SEE WORKER. DATA (PURANA MESSAGE DELETE HOGA AGAR PEHLE SE HAI)
     elif "see worker. data" in text_lower or "see worker" in text_lower:
+        # Purana data report delete karo agar pehle se bheja hua tha
+        old_see_msg_id = DATA.get("see_data_msg_id")
+        if old_see_msg_id:
+            try:
+                bot.delete_message(chat_id=chat_id, message_id=old_see_msg_id)
+            except Exception:
+                pass
+            DATA["see_data_msg_id"] = None
+
         report_lines = ["🔎 <b>WORKER DATA & ASSIGNMENT REPORT:</b>\n"]
         for worker_name, stats in DATA["workers"].items():
             data_type = stats.get("data_type") or "Not Specified"
@@ -402,7 +402,9 @@ def handle_menu_actions(message):
                 f"✅ <b>Done:</b> {done} | ❌ <b>Failed:</b> {failed} | 🔑 <b>Wrong:</b> {wrong} | 🔧 <b>Manage:</b> {manage}\n"
                 f"────────────────────"
             )
-        bot.send_message(chat_id, "\n".join(report_lines), parse_mode="HTML")
+
+        sent = bot.send_message(chat_id, "\n".join(report_lines), parse_mode="HTML")
+        DATA["see_data_msg_id"] = sent.message_id
 
     # 6. ONLINE
     elif "online" in text_lower:
@@ -423,7 +425,7 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 8. CONT. WORK (WITH ONLINE CHECK LOGIC)
+    # 8. CONT. WORK
     elif "cont. work" in text_lower or "cont" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
@@ -438,7 +440,7 @@ def handle_menu_actions(message):
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 9. PAUSE WORK (WITH ONLINE CHECK LOGIC)
+    # 9. PAUSE WORK
     elif "pause work" in text_lower or "pause" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
@@ -452,21 +454,6 @@ def handle_menu_actions(message):
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("stop", SELECTIONS[chat_id])
         bot.send_message(chat_id, "⏸️ <b>Kiska kaam pause karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
-
-    elif text_lower in ["new day", "/newday"]:
-        DATA["day_token"] = str(int(time.time()))
-        for w, stats in DATA["workers"].items():
-            stats["taken"] = 0
-            stats["used_json"] = 0
-            stats["done"] = 0
-            stats["login_failed"] = 0
-            stats["wrong_pass"] = 0
-            stats["manage"] = 0
-            stats["data_type"] = None
-            stats["allotted"] = None
-        
-        bot.send_message(chat_id, "🌅 <b>New Day Started!</b>\n\nCounts reset to 0.", parse_mode="HTML")
-        force_edit_only()
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
