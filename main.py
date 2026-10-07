@@ -59,7 +59,6 @@ def is_authorized(message_or_call):
         return False
     return True
 
-# EXACT IMAGE 1 MENU LAYOUT
 def get_admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     # Row 1
@@ -157,19 +156,34 @@ def recreate_single_card(chat_id):
         except Exception as e:
             print(f"Recreate error: {e}")
 
+# Helper: Sirf Online workers nikalna
+def get_online_workers():
+    current_time = time.time()
+    online = []
+    for w, stats in DATA["workers"].items():
+        if stats.get("mode") == "Online 🟢" and (current_time - stats.get("last_seen_watcher", 0) <= 20):
+            online.append(w)
+    return online
+
+# BUILD SELECTION MARKUP (SIRF ONLINE WORKERS KO DIKHAYEGA)
 def build_worker_selection_markup(action_type, selected_workers):
     markup = InlineKeyboardMarkup()
-    for w_name in DATA["workers"].keys():
+    online_workers = get_online_workers()
+
+    for w_name in online_workers:
         is_checked = w_name in selected_workers
         box = "☑️" if is_checked else "⬜"
-        btn_text = f"{box} {w_name.upper()}"
+        
+        # Paused hai ya Active
+        state_icon = "⏸️" if w_name in DATA["paused_workers"] else "🟢"
+        btn_text = f"{box} {state_icon} {w_name.upper()}"
         callback_data = f"toggle:{action_type}:{w_name}"
         markup.add(InlineKeyboardButton(btn_text, callback_data=callback_data))
 
     if action_type == "stop":
         markup.row(
-            InlineKeyboardButton("🛑 All Pause", callback_data="exec:stop:all"),
-            InlineKeyboardButton("🛑 Sel. Pause", callback_data="exec:stop:sel")
+            InlineKeyboardButton("🔴 All Pause", callback_data="exec:stop:all"),
+            InlineKeyboardButton("🔴 Sel. Pause", callback_data="exec:stop:sel")
         )
     else:
         markup.row(
@@ -345,7 +359,7 @@ def handle_menu_actions(message):
         )
         force_edit_only()
 
-    # 3. END DAY + CLEAN RDP (Pehle check kiya taaki general End Day se alag rahe)
+    # 3. END DAY + CLEAN RDP
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
         DATA["day_started"] = False
         DATA["clean_rdp_triggered"] = True
@@ -392,7 +406,7 @@ def handle_menu_actions(message):
 
     # 6. ONLINE
     elif "online" in text_lower:
-        online_list = [w.upper() for w, stats in DATA["workers"].items() if "Online" in stats.get("mode", "")]
+        online_list = [w.upper() for w in get_online_workers()]
         if online_list:
             msg = "<b>🟢 ONLINE WORKERS:</b>\n\n" + "\n".join([f"🟢 {w}" for w in online_list])
         else:
@@ -401,21 +415,40 @@ def handle_menu_actions(message):
 
     # 7. OFFLINE
     elif "offline" in text_lower:
-        offline_list = [w.upper() for w, stats in DATA["workers"].items() if "Offline" in stats.get("mode", "")]
+        online_set = set(get_online_workers())
+        offline_list = [w.upper() for w in DATA["workers"].keys() if w not in online_set]
         if offline_list:
             msg = "<b>🔴 OFFLINE WORKERS:</b>\n\n" + "\n".join([f"🔴 {w}" for w in offline_list])
         else:
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 8. CONT. WORK
+    # 8. CONT. WORK (WITH ONLINE CHECK LOGIC)
     elif "cont. work" in text_lower or "cont" in text_lower:
+        online_workers = get_online_workers()
+        if not online_workers:
+            bot.send_message(
+                chat_id,
+                "⚠️ <b>Filhal koi worker online nahi hai!</b>\nWorker offline hai toh kiska kaam continue karoge?",
+                parse_mode="HTML"
+            )
+            return
+
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 9. PAUSE WORK
+    # 9. PAUSE WORK (WITH ONLINE CHECK LOGIC)
     elif "pause work" in text_lower or "pause" in text_lower:
+        online_workers = get_online_workers()
+        if not online_workers:
+            bot.send_message(
+                chat_id,
+                "⚠️ <b>Filhal koi worker online nahi hai!</b>\nWorker offline hai toh kiska kaam pause karoge?",
+                parse_mode="HTML"
+            )
+            return
+
         SELECTIONS[chat_id] = set()
         markup = build_worker_selection_markup("stop", SELECTIONS[chat_id])
         bot.send_message(chat_id, "⏸️ <b>Kiska kaam pause karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
@@ -466,12 +499,13 @@ def handle_callbacks(call):
     elif cmd == "exec":
         action_type = data_parts[1]
         target = data_parts[2]
+        online_workers = get_online_workers()
 
         if action_type == "stop":
             if target == "all":
-                for w in DATA["workers"].keys():
+                for w in online_workers:
                     DATA["paused_workers"].add(w)
-                bot.edit_message_text("⏸️ <b>Sabhi workers ka kaam PAUSE kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
+                bot.edit_message_text("⏸️ <b>Sabhi ONLINE workers ka kaam PAUSE kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
             elif target == "sel":
                 selected = SELECTIONS.get(chat_id, set())
                 if not selected:
@@ -484,8 +518,9 @@ def handle_callbacks(call):
 
         elif action_type == "cont":
             if target == "all":
-                DATA["paused_workers"].clear()
-                bot.edit_message_text("▶️ <b>Sabhi workers ka kaam RESUME kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
+                for w in online_workers:
+                    DATA["paused_workers"].discard(w)
+                bot.edit_message_text("▶️ <b>Sabhi ONLINE workers ka kaam RESUME kar diya gaya hai!</b>", chat_id, call.message.message_id, parse_mode="HTML")
             elif target == "sel":
                 selected = SELECTIONS.get(chat_id, set())
                 if not selected:
