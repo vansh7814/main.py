@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import re
 import threading
 from flask import Flask, request, jsonify
 import telebot
@@ -40,8 +41,36 @@ DATA = {
 }
 
 SELECTIONS = {}
-ADMIN_STATE = {}  # Custom message input track karne ke liye
+ADMIN_STATE = {}
+TEMP_CUSTOM_MSG = {}
 edit_lock = threading.Lock()
+
+# Basic Hinglish/English auto spelling clean-up helper
+def auto_correct_text(text):
+    text = text.strip()
+    corrections = {
+        r"\bkam\b": "kaam",
+        r"\bshru\b": "shuru",
+        r"\bsart\b": "start",
+        r"\bstrt\b": "start",
+        r"\bcancle\b": "cancel",
+        r"\badminn\b": "admin",
+        r"\bwrk\b": "work",
+        r"\bbhiddu\b": "bhidu",
+        r"\bmesaage\b": "message",
+        r"\bmsg\b": "message",
+        r"\bplz\b": "please",
+        r"\btym\b": "time",
+        r"\bwaitng\b": "waiting",
+        r"\bofflinee\b": "offline",
+        r"\bonn\b": "on",
+        r"\bofff\b": "off"
+    }
+    for pattern, repl in corrections.items():
+        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    # Extra spaces clean
+    text = re.sub(r'\s+', ' ', text)
+    return text
 
 def normalize_worker_name(raw_name):
     if not raw_name:
@@ -187,11 +216,23 @@ def build_worker_selection_markup(action_type, selected_workers):
         )
     return markup
 
+# 10 Sec delay ke baad message ko chota karne wala thread
+def delayed_shorten_end_day_msg(chat_id, message_id):
+    time.sleep(10)
+    try:
+        bot.edit_message_text(
+            "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>",
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
 @app.route('/')
 def home():
     return "Admin & Watcher Central API Active!"
 
-# Email bot yahan se status aur custom/default block message check karega
 @app.route('/check_day', methods=['GET', 'POST'])
 def check_day():
     req_data = request.args if request.method == 'GET' else (request.json or {})
@@ -338,33 +379,50 @@ def handle_menu_actions(message):
     text_lower = text.lower()
     chat_id = message.chat.id
 
-    # Agar Admin se custom message input ka wait kar rahe the
+    # Agar Admin se custom message input ka wait tha
     if ADMIN_STATE.get(chat_id) == "WAITING_FOR_CUSTOM_MSG":
         ADMIN_STATE[chat_id] = None
-        DATA["day_started"] = False
-        DATA["block_message"] = text
+        corrected = auto_correct_text(text)
+        TEMP_CUSTOM_MSG[chat_id] = corrected
+
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("✅ Haan, Bhejo", callback_data="confirm_custom:yes"),
+            InlineKeyboardButton("❌ Cancel", callback_data="confirm_custom:no")
+        )
         bot.send_message(
             chat_id,
-            f"✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>\n\nAb worker bot par worker ko yeh message dikhega:\n\n<i>\"{text}\"</i>",
-            parse_mode="HTML"
+            f"❓ <b>Kya yahi custom message set karna hai?</b>\n\n"
+            f"<i>\"{corrected}\"</i>\n\n"
+            f"(Spelling aur structure check kar liya gaya hai)",
+            parse_mode="HTML",
+            reply_markup=markup
         )
-        force_edit_only()
         return
 
     # 1. STATUS
     if "status" in text_lower:
         recreate_single_card(chat_id)
 
-    # 2. START. WORK
+    # 2. START. WORK (7 GUIDELINES + START & CANCEL BUTTONS)
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
-        DATA["day_started"] = True
-        DATA["block_message"] = DEFAULT_END_DAY_MSG
-        bot.send_message(
-            chat_id,
-            "▶️ <b>DIN SHURU HO GAYA HAI!</b>\n\nEmail Bot ab workers ke liye OPEN ho chuka hai.",
-            parse_mode="HTML"
+        guidelines_text = (
+            "📋 <b>WORK START GUIDELINES & CHECKLIST:</b>\n\n"
+            "1️⃣ Sabhi workers ka RDP and Network connection check karein.\n"
+            "2️⃣ Ensure karein ki pending emails database mein uploaded hain.\n"
+            "3️⃣ Data types aur software assignments verify karein.\n"
+            "4️⃣ Workers ko notify karein ki unka system ready hai.\n"
+            "5️⃣ Day counts aur live monitor reset ensure karein.\n"
+            "6️⃣ Koi worker paused list mein na ho ye check karein.\n"
+            "7️⃣ Work start hone ke baad live status monitor open rakhein.\n\n"
+            "👉 <i>Kya aap work start karke Email Bot ON karna chahte hain?</i>"
         )
-        force_edit_only()
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("✅ Start", callback_data="startwork:start"),
+            InlineKeyboardButton("❌ Cancel", callback_data="startwork:cancel")
+        )
+        bot.send_message(chat_id, guidelines_text, parse_mode="HTML", reply_markup=markup)
 
     # 3. END DAY + CLEAN RDP
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
@@ -378,7 +436,7 @@ def handle_menu_actions(message):
         )
         force_edit_only()
 
-    # 4. END DAY (2 OPTIONS: DIN END YA CUSTOM MESSAGE)
+    # 4. END DAY (2 OPTIONS: DEFAULT YA CUSTOM)
     elif "end day" in text_lower:
         markup = InlineKeyboardMarkup()
         markup.row(
@@ -388,8 +446,8 @@ def handle_menu_actions(message):
         bot.send_message(
             chat_id,
             "⏸️ <b>End Day Options Chunein:</b>\n\n"
-            "• <b>Din End (Default):</b> Normal message aayega: <i>'Abhi din shuru nahi hua bhidu...'</i>\n"
-            "• <b>Custom Message:</b> Apna khud ka koi message likh kar bhejein jo worker ko dikhe.",
+            "• <b>Din End (Default):</b> Default block message set hoga.\n"
+            "• <b>Custom Message:</b> Apna custom message likh kar bhejein.",
             parse_mode="HTML",
             reply_markup=markup
         )
@@ -486,13 +544,38 @@ def handle_callbacks(call):
     data_parts = call.data.split(":")
     cmd = data_parts[0]
 
-    # End Day Callback Handle
+    # START WORK GUIDELINES RESPONSE
+    if cmd == "startwork":
+        action = data_parts[1]
+        if action == "start":
+            DATA["day_started"] = True
+            DATA["block_message"] = DEFAULT_END_DAY_MSG
+            bot.edit_message_text(
+                "✅ <b>work start ho gaya hai ab team work start kar sakti hai!... Email Bot Start.</b>",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+            force_edit_only()
+        elif action == "cancel":
+            bot.edit_message_text(
+                "❌ <b>work start cancle kar diya hai hai!... Email Bot Not Started.</b>",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+        bot.answer_callback_query(call.id)
+        return
+
+    # END DAY CALLBACKS
     if cmd == "endday":
         option = data_parts[1]
         if option == "default":
             DATA["day_started"] = False
             DATA["block_message"] = DEFAULT_END_DAY_MSG
             ADMIN_STATE[chat_id] = None
+            
+            # Pehle detailed message
             bot.edit_message_text(
                 "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nWorkers ko default message dikhega:\n<i>\"" + DEFAULT_END_DAY_MSG + "\"</i>",
                 chat_id,
@@ -500,14 +583,42 @@ def handle_callbacks(call):
                 parse_mode="HTML"
             )
             force_edit_only()
+            # 10 second baad sirf "⏸️ DIN END KAR DIYA GAYA HAI!" rahega
+            threading.Thread(target=delayed_shorten_end_day_msg, args=(chat_id, call.message.message_id), daemon=True).start()
+
         elif option == "custom":
             ADMIN_STATE[chat_id] = "WAITING_FOR_CUSTOM_MSG"
             bot.edit_message_text(
-                "✍️ <b>Custom Message Mode:</b>\n\nAb agle message mein apna custom message likh kar bhejein jo aap worker bot mein dikhana chahte hain.",
+                "✍️ <b>Custom Message Mode:</b>\n\nAb message likh kar bhejein jo aap workers ko dikhana chahte hain.",
                 chat_id,
                 call.message.message_id,
                 parse_mode="HTML"
             )
+        bot.answer_callback_query(call.id)
+        return
+
+    # CONFIRM CUSTOM MESSAGE
+    if cmd == "confirm_custom":
+        choice = data_parts[1]
+        if choice == "yes":
+            DATA["day_started"] = False
+            final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
+            DATA["block_message"] = final_msg
+            bot.edit_message_text(
+                f"✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>\n\nWorkers ko ab yeh message dikhega:\n<i>\"{final_msg}\"</i>",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+            force_edit_only()
+        else:
+            bot.edit_message_text(
+                "❌ Custom message cancel kar diya gaya hai. Din abhi end nahi hua.",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+        TEMP_CUSTOM_MSG.pop(chat_id, None)
         bot.answer_callback_query(call.id)
         return
 
