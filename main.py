@@ -216,7 +216,6 @@ def build_worker_selection_markup(action_type, selected_workers):
         )
     return markup
 
-# 7 sec baad message delete karne ka thread
 def auto_delete_after_7s(chat_id, message_id):
     time.sleep(7)
     try:
@@ -415,9 +414,8 @@ def handle_menu_actions(message):
 
     # 2. START. WORK
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
-        # Check agar work already start hai
         if DATA.get("day_started", False):
-            warn_msg = bot.send_message(chat_id, "⚠️ <b>Kaam already start ho gaya hai!</b>", parse_mode="HTML")
+            warn_msg = bot.send_message(chat_id, "⚠️ <b>Aap na  Kaam already start kar diya hai!</b>", parse_mode="HTML")
             threading.Thread(target=auto_delete_after_7s, args=(chat_id, warn_msg.message_id), daemon=True).start()
             return
 
@@ -453,9 +451,19 @@ def handle_menu_actions(message):
 
     # 4. END DAY
     elif "end day" in text_lower:
-        # Check agar din already end hai
+        # Agar din pehle se hi band hai toh Custom Message update karne ka direct option milega
         if not DATA.get("day_started", False):
-            warn_msg = bot.send_message(chat_id, "⚠️ <b>Kaam already end ho chuka hai!</b>", parse_mode="HTML")
+            curr_msg = DATA.get("block_message", DEFAULT_END_DAY_MSG)
+            markup = InlineKeyboardMarkup()
+            markup.row(InlineKeyboardButton("✍️ Update Custom Message", callback_data="endday:custom"))
+            warn_msg = bot.send_message(
+                chat_id,
+                f"⚠️ <b>Kaam already end ho chuka hai!</b>\n\n"
+                f"<b>Abhi ka block message:</b>\n<i>\"{curr_msg}\"</i>\n\n"
+                f"Naya message lagana ho toh niche click karein:",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
             threading.Thread(target=auto_delete_after_7s, args=(chat_id, warn_msg.message_id), daemon=True).start()
             return
 
