@@ -43,7 +43,7 @@ DATA = {
 SELECTIONS = {}
 ADMIN_STATE = {}
 TEMP_CUSTOM_MSG = {}
-CUSTOM_PROMPT_MSG = {} # Prompt aur user input IDs delete karne ke liye
+CUSTOM_PROMPT_MSG = {}
 edit_lock = threading.Lock()
 
 def auto_correct_text(text):
@@ -216,23 +216,19 @@ def build_worker_selection_markup(action_type, selected_workers):
         )
     return markup
 
+# 7 sec baad message delete karne ka thread
+def auto_delete_after_7s(chat_id, message_id):
+    time.sleep(7)
+    try:
+        bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
 def delayed_shorten_default_msg(chat_id, message_id):
     time.sleep(10)
     try:
         bot.edit_message_text(
             "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>",
-            chat_id=chat_id,
-            message_id=message_id,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-def delayed_shorten_custom_msg(chat_id, message_id):
-    time.sleep(10)
-    try:
-        bot.edit_message_text(
-            "✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>",
             chat_id=chat_id,
             message_id=message_id,
             parse_mode="HTML"
@@ -390,10 +386,8 @@ def handle_menu_actions(message):
     text_lower = text.lower()
     chat_id = message.chat.id
 
-    # Custom message input handle
     if ADMIN_STATE.get(chat_id) == "WAITING_FOR_CUSTOM_MSG":
         ADMIN_STATE[chat_id] = None
-        # User ne jo text bheja uski ID save karein taaki baad mein delete kar sakein
         CUSTOM_PROMPT_MSG[f"{chat_id}_user_input"] = message.message_id
         
         corrected = auto_correct_text(text)
@@ -421,6 +415,12 @@ def handle_menu_actions(message):
 
     # 2. START. WORK
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
+        # Check agar work already start hai
+        if DATA.get("day_started", False):
+            warn_msg = bot.send_message(chat_id, "⚠️ <b>Kaam already start ho gaya hai!</b>", parse_mode="HTML")
+            threading.Thread(target=auto_delete_after_7s, args=(chat_id, warn_msg.message_id), daemon=True).start()
+            return
+
         guidelines_text = (
             "📋 <b>WORK START GUIDELINES & CHECKLIST:</b>\n\n"
             "1️⃣ Sabhi workers ka RDP and Network connection check karein.\n"
@@ -453,6 +453,12 @@ def handle_menu_actions(message):
 
     # 4. END DAY
     elif "end day" in text_lower:
+        # Check agar din already end hai
+        if not DATA.get("day_started", False):
+            warn_msg = bot.send_message(chat_id, "⚠️ <b>Kaam already end ho chuka hai!</b>", parse_mode="HTML")
+            threading.Thread(target=auto_delete_after_7s, args=(chat_id, warn_msg.message_id), daemon=True).start()
+            return
+
         markup = InlineKeyboardMarkup()
         markup.row(
             InlineKeyboardButton("⏹️ Din End (Default)", callback_data="endday:default"),
@@ -601,7 +607,6 @@ def handle_callbacks(call):
 
         elif option == "custom":
             ADMIN_STATE[chat_id] = "WAITING_FOR_CUSTOM_MSG"
-            # Prompt message save taaki baad me delete ho sake
             CUSTOM_PROMPT_MSG[f"{chat_id}_prompt"] = call.message.message_id
             bot.edit_message_text(
                 "✍️ <b>Custom Message Mode:</b>\n\nAb message likh kar bhejein jo aap workers ko dikhana chahte hain.",
@@ -616,7 +621,6 @@ def handle_callbacks(call):
     if cmd == "confirm_custom":
         choice = data_parts[1]
         
-        # 1. Custom prompt message delete karein (✍️ Custom Message Mode)
         prompt_id = CUSTOM_PROMPT_MSG.pop(f"{chat_id}_prompt", None)
         if prompt_id:
             try:
@@ -624,7 +628,6 @@ def handle_callbacks(call):
             except Exception:
                 pass
 
-        # 2. User ka likha hua message text bubble delete karein
         user_in_id = CUSTOM_PROMPT_MSG.pop(f"{chat_id}_user_input", None)
         if user_in_id:
             try:
@@ -637,7 +640,6 @@ def handle_callbacks(call):
             final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
             DATA["block_message"] = final_msg
             
-            # Confirmation message ko edit karke clean message banayein
             bot.edit_message_text(
                 "✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>",
                 chat_id,
