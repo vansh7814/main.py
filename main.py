@@ -15,11 +15,11 @@ app = Flask(__name__)
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
-    "see_data_msg_id": None,  # See worker data ke message tracking ke liye
+    "see_data_msg_id": None,
     "clean_rdp_triggered": False,
-    "day_started": False,
+    "day_started": False,          # Email bot ke din ka ON/OFF switch
     "day_token": str(int(time.time())),
-    "paused_workers": set(),
+    "paused_workers": set(),      # RDP Pause/Resume ke liye alag set
     "workers": {
         "vansh": {
             "mode": "Offline 🔴",
@@ -88,11 +88,11 @@ def format_all_workers_card():
         wrong = stats.get("wrong_pass", 0)
         manage = stats.get("manage", 0)
         status_mode = stats.get('mode', 'Offline 🔴')
-        day_text = "🟢 ACTIVE" if DATA.get("day_started") else "⏸️ STOPPED"
+        day_text = "🟢 STARTED" if DATA.get("day_started") else "⏸️ NOT STARTED"
 
         card = (
             f"📊 <b>Live Monitor — {worker_name.upper()}</b>\n\n"
-            f"🌐 <b>Network:</b> {status_mode} | <b>Day:</b> {day_text}\n"
+            f"🌐 <b>Network:</b> {status_mode} | <b>Email Day:</b> {day_text}\n"
             f"{allotted_line}\n"
             f"────────────────────\n"
             f"📥 <b>Taken:</b> {taken}\n"
@@ -187,18 +187,17 @@ def build_worker_selection_markup(action_type, selected_workers):
 def home():
     return "Admin & Watcher Central API Active!"
 
+# EMAIL BOT KE LIYE SPECIAL STATUS ENDPOINT
 @app.route('/check_day', methods=['GET', 'POST'])
 def check_day():
     req_data = request.args if request.method == 'GET' else (request.json or {})
     raw_worker = req_data.get("user_id") or req_data.get("worker_name") or "vansh"
     worker = normalize_worker_name(raw_worker)
 
-    is_paused = (worker in DATA["paused_workers"])
-    is_allowed = DATA.get("day_started", False) and not is_paused
+    is_day_started = DATA.get("day_started", False)
 
     return jsonify({
-        "day_started": DATA.get("day_started", False),
-        "work_allowed": is_allowed,
+        "day_started": is_day_started,
         "clean_rdp": DATA.get("clean_rdp_triggered", False)
     }), 200
 
@@ -256,6 +255,7 @@ def handle_event():
     force_edit_only()
     return jsonify({"success": True}), 200
 
+# RDP WATCHER KA POLL (Yahan se day_started hata diya hai taaki stop banner na aaye)
 @app.route('/poll', methods=['POST'])
 def handle_poll():
     req_data = request.json or {}
@@ -280,7 +280,8 @@ def handle_poll():
     DATA["workers"][worker]["last_seen_watcher"] = time.time()
 
     do_clean = DATA.get("clean_rdp_triggered", False)
-    is_paused = (worker in DATA["paused_workers"]) or not DATA.get("day_started", False)
+    # Banner sirf tabhi aayega jab Admin "Pause Work" button dabayega!
+    is_paused = (worker in DATA["paused_workers"])
 
     return jsonify({
         "deletes": [],
@@ -338,14 +339,12 @@ def handle_menu_actions(message):
     if "status" in text_lower:
         recreate_single_card(chat_id)
 
-    # 2. START. WORK
+    # 2. START. WORK (Email bot access ON karega)
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
         DATA["day_started"] = True
-        DATA["clean_rdp_triggered"] = False
-        DATA["paused_workers"].clear()
         bot.send_message(
             chat_id,
-            "▶️ <b>DIN SHURU HO GAYA HAI!</b>\n\nWorkers ab email bot use kar sakte hain, din shuru ho chuka hai.",
+            "▶️ <b>DIN SHURU HO GAYA HAI!</b>\n\nEmail Bot ab workers ke liye OPEN ho chuka hai.",
             parse_mode="HTML"
         )
         force_edit_only()
@@ -356,24 +355,23 @@ def handle_menu_actions(message):
         DATA["clean_rdp_triggered"] = True
         bot.send_message(
             chat_id,
-            "🧹 <b>DIN END + RDP CLEAN SIGNAL SENT!</b>\n\nDin band kar diya gaya hai aur worker RDP clean ho jayegi.",
+            "🧹 <b>DIN END + RDP CLEAN SIGNAL SENT!</b>\n\nEmail Bot stop ho gaya hai aur RDP clean trigger bhej diya gaya hai.",
             parse_mode="HTML"
         )
         force_edit_only()
 
-    # 4. END DAY (Normal)
+    # 4. END DAY (Email bot access OFF karega, RDP banner ko nahi chedega)
     elif "end day" in text_lower:
         DATA["day_started"] = False
         bot.send_message(
             chat_id,
-            "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nWorkers ke liye access stop kar diya gaya hai.",
+            "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nEmail Bot ab workers ke liye CLOSED ho gaya hai.",
             parse_mode="HTML"
         )
         force_edit_only()
 
-    # 5. SEE WORKER. DATA (PURANA MESSAGE DELETE HOGA AGAR PEHLE SE HAI)
+    # 5. SEE WORKER. DATA
     elif "see worker. data" in text_lower or "see worker" in text_lower:
-        # Purana data report delete karo agar pehle se bheja hua tha
         old_see_msg_id = DATA.get("see_data_msg_id")
         if old_see_msg_id:
             try:
@@ -425,7 +423,7 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 8. CONT. WORK
+    # 8. CONT. WORK (RDP BANNER HATAYEGA)
     elif "cont. work" in text_lower or "cont" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
@@ -440,7 +438,7 @@ def handle_menu_actions(message):
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 9. PAUSE WORK
+    # 9. PAUSE WORK (RDP STOP BANNER DIKHAYEGA)
     elif "pause work" in text_lower or "pause" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
