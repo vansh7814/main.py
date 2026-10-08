@@ -225,6 +225,19 @@ def auto_delete_after_7s(chat_id, message_id):
     except Exception:
         pass
 
+# 2.30 MINUTE (150 SECONDS) BAAD CONFIRMATION PROMPT DIKHANE KA THREAD
+def prompt_after_150s(chat_id, message_id):
+    time.sleep(150)
+    try:
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("Message sent", callback_data=f"delprompt:sent:{message_id}"),
+            InlineKeyboardButton("Cancel", callback_data=f"delprompt:cancel:{message_id}")
+        )
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    except Exception:
+        pass
+
 def delayed_shorten_default_msg(chat_id, message_id):
     time.sleep(10)
     try:
@@ -448,9 +461,8 @@ def handle_menu_actions(message):
         )
         bot.send_message(chat_id, guidelines_text, parse_mode="HTML", reply_markup=markup)
 
-    # 3. END DAY + CLEAN RDP (DUPLICATE CHECK ADDED)
+    # 3. END DAY + CLEAN RDP
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
-        # Check agar din pehle se band hai aur Clean RDP signal pehle hi bheja ja chuka hai
         is_clean_active = DATA.get("clean_rdp_triggered", False) or (DATA.get("clean_7h_until", 0) > time.time())
         if not DATA.get("day_started", False) and is_clean_active:
             warn_msg = bot.send_message(
@@ -475,19 +487,24 @@ def handle_menu_actions(message):
 
     # 4. END DAY
     elif "end day" in text_lower:
+        # AGAR DIN PEHLE SE HI BAND HAI TOH DONO OPTION MILENGE (Default reset ya Custom update)
         if not DATA.get("day_started", False):
             curr_msg = get_current_block_message()
             markup = InlineKeyboardMarkup()
-            markup.row(InlineKeyboardButton("✍️ Update Custom Message", callback_data="endday:custom"))
+            markup.row(
+                InlineKeyboardButton("⏹️ Reset to Default (Din Shuru Nhi Hua)", callback_data="endday:default"),
+                InlineKeyboardButton("✍️ Update Custom Message", callback_data="endday:custom")
+            )
             warn_msg = bot.send_message(
                 chat_id,
                 f"⚠️ <b>Kaam already end ho chuka hai!</b>\n\n"
                 f"<b>Abhi ka block message:</b>\n<i>\"{curr_msg}\"</i>\n\n"
-                f"Naya message lagana ho toh niche click karein:",
+                f"Kripya niche se option chunein:",
                 parse_mode="HTML",
                 reply_markup=markup
             )
-            threading.Thread(target=auto_delete_after_7s, args=(chat_id, warn_msg.message_id), daemon=True).start()
+            # 2.30 Minute (150s) baad puchega "Message sent" ya "Cancel"
+            threading.Thread(target=prompt_after_150s, args=(chat_id, warn_msg.message_id), daemon=True).start()
             return
 
         markup = InlineKeyboardMarkup()
@@ -596,15 +613,32 @@ def handle_callbacks(call):
     data_parts = call.data.split(":")
     cmd = data_parts[0]
 
+    # 2.30 MIN KE BAAD MESSAGE REMOVAL PROMPT ACTIONS
+    if cmd == "delprompt":
+        action = data_parts[1]
+        target_msg_id = int(data_parts[2])
+        if action == "sent":
+            try:
+                bot.delete_message(chat_id=chat_id, message_id=target_msg_id)
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, "✅ Message hata diya gaya hai!")
+        elif action == "cancel":
+            try:
+                bot.edit_message_reply_markup(chat_id=chat_id, message_id=target_msg_id, reply_markup=None)
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, "❌ Cancelled!")
+        return
+
     # CLEAN RDP CONFIRMATION CALLBACK
     if cmd == "confirm_clean":
         choice = data_parts[1]
         if choice == "yes":
             DATA["day_started"] = False
             DATA["clean_rdp_triggered"] = True
-            # Agle 7 ghante tak 7h wala message set rahega
             DATA["clean_7h_until"] = time.time() + (7 * 3600)
-            DATA["block_message"] = DEFAULT_END_DAY_MSG # 7 hr baad fallback
+            DATA["block_message"] = DEFAULT_END_DAY_MSG
 
             bot.edit_message_text(
                 "🧹 <b>din end + clean kar diya hai</b>",
@@ -628,7 +662,7 @@ def handle_callbacks(call):
         action = data_parts[1]
         if action == "start":
             DATA["day_started"] = True
-            DATA["clean_rdp_triggered"] = False  # Naye din par clean state reset
+            DATA["clean_rdp_triggered"] = False
             DATA["clean_7h_until"] = 0
             DATA["block_message"] = DEFAULT_END_DAY_MSG
             bot.edit_message_text(
