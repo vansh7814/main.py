@@ -14,7 +14,7 @@ bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
 DEFAULT_END_DAY_MSG = "⏸️ Abhi din shuru nahi hua bhidu, thoda ruk — admin start karega tabhi kaam milega."
-CLEAN_7H_MSG = "ajj ka din khatm bhidu, kal admin start karega tabhi kaam milega."
+CLEAN_7H_MSG = "⏸️ Ajj ka din khatm bhidu,😤 kal admin start karega tabhi kaam milega.."
 
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
@@ -225,7 +225,6 @@ def auto_delete_after_7s(chat_id, message_id):
     except Exception:
         pass
 
-# 2.30 MINUTE (150 SECONDS) BAAD CONFIRMATION PROMPT DIKHANE KA THREAD
 def prompt_after_150s(chat_id, message_id):
     time.sleep(150)
     try:
@@ -250,7 +249,6 @@ def delayed_shorten_default_msg(chat_id, message_id):
     except Exception:
         pass
 
-# ACTIVE BLOCK MESSAGE CALCULATION (7 Hours Check)
 def get_current_block_message():
     current_time = time.time()
     if DATA.get("clean_7h_until", 0) > current_time:
@@ -261,7 +259,6 @@ def get_current_block_message():
 def home():
     return "Admin & Watcher Central API Active!"
 
-# Email Bot is API ko call karega
 @app.route('/check_day', methods=['GET', 'POST'])
 def check_day():
     req_data = request.args if request.method == 'GET' else (request.json or {})
@@ -487,7 +484,6 @@ def handle_menu_actions(message):
 
     # 4. END DAY
     elif "end day" in text_lower:
-        # AGAR DIN PEHLE SE HI BAND HAI TOH DONO OPTION MILENGE (Default reset ya Custom update)
         if not DATA.get("day_started", False):
             curr_msg = get_current_block_message()
             markup = InlineKeyboardMarkup()
@@ -503,7 +499,6 @@ def handle_menu_actions(message):
                 parse_mode="HTML",
                 reply_markup=markup
             )
-            # 2.30 Minute (150s) baad puchega "Message sent" ya "Cancel"
             threading.Thread(target=prompt_after_150s, args=(chat_id, warn_msg.message_id), daemon=True).start()
             return
 
