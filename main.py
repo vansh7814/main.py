@@ -12,14 +12,17 @@ ALLOWED_ADMIN_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
+DEFAULT_END_DAY_MSG = "⏸️ Abhi din shuru nahi hua bhidu, thoda ruk — admin start karega tabhi kaam milega."
+
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "see_data_msg_id": None,
     "clean_rdp_triggered": False,
-    "day_started": False,          # Email bot ke din ka ON/OFF switch
+    "day_started": False,
+    "block_message": DEFAULT_END_DAY_MSG,
     "day_token": str(int(time.time())),
-    "paused_workers": set(),      # RDP Pause/Resume ke liye alag set
+    "paused_workers": set(),
     "workers": {
         "vansh": {
             "mode": "Offline 🔴",
@@ -37,6 +40,7 @@ DATA = {
 }
 
 SELECTIONS = {}
+ADMIN_STATE = {}  # Custom message input track karne ke liye
 edit_lock = threading.Lock()
 
 def normalize_worker_name(raw_name):
@@ -187,7 +191,7 @@ def build_worker_selection_markup(action_type, selected_workers):
 def home():
     return "Admin & Watcher Central API Active!"
 
-# EMAIL BOT KE LIYE SPECIAL STATUS ENDPOINT
+# Email bot yahan se status aur custom/default block message check karega
 @app.route('/check_day', methods=['GET', 'POST'])
 def check_day():
     req_data = request.args if request.method == 'GET' else (request.json or {})
@@ -198,7 +202,8 @@ def check_day():
 
     return jsonify({
         "day_started": is_day_started,
-        "clean_rdp": DATA.get("clean_rdp_triggered", False)
+        "clean_rdp": DATA.get("clean_rdp_triggered", False),
+        "block_message": DATA.get("block_message", DEFAULT_END_DAY_MSG)
     }), 200
 
 @app.route('/event', methods=['GET', 'POST'])
@@ -255,7 +260,6 @@ def handle_event():
     force_edit_only()
     return jsonify({"success": True}), 200
 
-# RDP WATCHER KA POLL (Yahan se day_started hata diya hai taaki stop banner na aaye)
 @app.route('/poll', methods=['POST'])
 def handle_poll():
     req_data = request.json or {}
@@ -280,7 +284,6 @@ def handle_poll():
     DATA["workers"][worker]["last_seen_watcher"] = time.time()
 
     do_clean = DATA.get("clean_rdp_triggered", False)
-    # Banner sirf tabhi aayega jab Admin "Pause Work" button dabayega!
     is_paused = (worker in DATA["paused_workers"])
 
     return jsonify({
@@ -335,13 +338,27 @@ def handle_menu_actions(message):
     text_lower = text.lower()
     chat_id = message.chat.id
 
+    # Agar Admin se custom message input ka wait kar rahe the
+    if ADMIN_STATE.get(chat_id) == "WAITING_FOR_CUSTOM_MSG":
+        ADMIN_STATE[chat_id] = None
+        DATA["day_started"] = False
+        DATA["block_message"] = text
+        bot.send_message(
+            chat_id,
+            f"✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>\n\nAb worker bot par worker ko yeh message dikhega:\n\n<i>\"{text}\"</i>",
+            parse_mode="HTML"
+        )
+        force_edit_only()
+        return
+
     # 1. STATUS
     if "status" in text_lower:
         recreate_single_card(chat_id)
 
-    # 2. START. WORK (Email bot access ON karega)
+    # 2. START. WORK
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
         DATA["day_started"] = True
+        DATA["block_message"] = DEFAULT_END_DAY_MSG
         bot.send_message(
             chat_id,
             "▶️ <b>DIN SHURU HO GAYA HAI!</b>\n\nEmail Bot ab workers ke liye OPEN ho chuka hai.",
@@ -353,6 +370,7 @@ def handle_menu_actions(message):
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
         DATA["day_started"] = False
         DATA["clean_rdp_triggered"] = True
+        DATA["block_message"] = DEFAULT_END_DAY_MSG
         bot.send_message(
             chat_id,
             "🧹 <b>DIN END + RDP CLEAN SIGNAL SENT!</b>\n\nEmail Bot stop ho gaya hai aur RDP clean trigger bhej diya gaya hai.",
@@ -360,15 +378,21 @@ def handle_menu_actions(message):
         )
         force_edit_only()
 
-    # 4. END DAY (Email bot access OFF karega, RDP banner ko nahi chedega)
+    # 4. END DAY (2 OPTIONS: DIN END YA CUSTOM MESSAGE)
     elif "end day" in text_lower:
-        DATA["day_started"] = False
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("⏹️ Din End (Default)", callback_data="endday:default"),
+            InlineKeyboardButton("✍️ Custom Message", callback_data="endday:custom")
+        )
         bot.send_message(
             chat_id,
-            "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nEmail Bot ab workers ke liye CLOSED ho gaya hai.",
-            parse_mode="HTML"
+            "⏸️ <b>End Day Options Chunein:</b>\n\n"
+            "• <b>Din End (Default):</b> Normal message aayega: <i>'Abhi din shuru nahi hua bhidu...'</i>\n"
+            "• <b>Custom Message:</b> Apna khud ka koi message likh kar bhejein jo worker ko dikhe.",
+            parse_mode="HTML",
+            reply_markup=markup
         )
-        force_edit_only()
 
     # 5. SEE WORKER. DATA
     elif "see worker. data" in text_lower or "see worker" in text_lower:
@@ -423,7 +447,7 @@ def handle_menu_actions(message):
             msg = "✅ <b>Sabhi workers online hain!</b>"
         bot.send_message(chat_id, msg, parse_mode="HTML")
 
-    # 8. CONT. WORK (RDP BANNER HATAYEGA)
+    # 8. CONT. WORK
     elif "cont. work" in text_lower or "cont" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
@@ -438,7 +462,7 @@ def handle_menu_actions(message):
         markup = build_worker_selection_markup("cont", SELECTIONS[chat_id])
         bot.send_message(chat_id, "▶️ <b>Kiska kaam resume karna hai select karein:</b>", parse_mode="HTML", reply_markup=markup)
 
-    # 9. PAUSE WORK (RDP STOP BANNER DIKHAYEGA)
+    # 9. PAUSE WORK
     elif "pause work" in text_lower or "pause" in text_lower:
         online_workers = get_online_workers()
         if not online_workers:
@@ -461,6 +485,31 @@ def handle_callbacks(call):
     chat_id = call.message.chat.id
     data_parts = call.data.split(":")
     cmd = data_parts[0]
+
+    # End Day Callback Handle
+    if cmd == "endday":
+        option = data_parts[1]
+        if option == "default":
+            DATA["day_started"] = False
+            DATA["block_message"] = DEFAULT_END_DAY_MSG
+            ADMIN_STATE[chat_id] = None
+            bot.edit_message_text(
+                "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nWorkers ko default message dikhega:\n<i>\"" + DEFAULT_END_DAY_MSG + "\"</i>",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+            force_edit_only()
+        elif option == "custom":
+            ADMIN_STATE[chat_id] = "WAITING_FOR_CUSTOM_MSG"
+            bot.edit_message_text(
+                "✍️ <b>Custom Message Mode:</b>\n\nAb agle message mein apna custom message likh kar bhejein jo aap worker bot mein dikhana chahte hain.",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+        bot.answer_callback_query(call.id)
+        return
 
     if chat_id not in SELECTIONS:
         SELECTIONS[chat_id] = set()
