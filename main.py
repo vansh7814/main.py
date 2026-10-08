@@ -45,10 +45,10 @@ ADMIN_STATE = {}
 TEMP_CUSTOM_MSG = {}
 edit_lock = threading.Lock()
 
-# Basic Hinglish/English auto spelling clean-up helper
 def auto_correct_text(text):
     text = text.strip()
     corrections = {
+        r"\bdim\b": "din",
         r"\bkam\b": "kaam",
         r"\bshru\b": "shuru",
         r"\bsart\b": "start",
@@ -68,7 +68,6 @@ def auto_correct_text(text):
     }
     for pattern, repl in corrections.items():
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
-    # Extra spaces clean
     text = re.sub(r'\s+', ' ', text)
     return text
 
@@ -216,12 +215,25 @@ def build_worker_selection_markup(action_type, selected_workers):
         )
     return markup
 
-# 10 Sec delay ke baad message ko chota karne wala thread
-def delayed_shorten_end_day_msg(chat_id, message_id):
+# 10 Sec baad default din end msg chota karna
+def delayed_shorten_default_msg(chat_id, message_id):
     time.sleep(10)
     try:
         bot.edit_message_text(
             "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>",
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+# 10 Sec baad custom message ko chota karna
+def delayed_shorten_custom_msg(chat_id, message_id):
+    time.sleep(10)
+    try:
+        bot.edit_message_text(
+            "✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>",
             chat_id=chat_id,
             message_id=message_id,
             parse_mode="HTML"
@@ -379,7 +391,7 @@ def handle_menu_actions(message):
     text_lower = text.lower()
     chat_id = message.chat.id
 
-    # Agar Admin se custom message input ka wait tha
+    # Custom message input handle
     if ADMIN_STATE.get(chat_id) == "WAITING_FOR_CUSTOM_MSG":
         ADMIN_STATE[chat_id] = None
         corrected = auto_correct_text(text)
@@ -394,7 +406,7 @@ def handle_menu_actions(message):
             chat_id,
             f"❓ <b>Kya yahi custom message set karna hai?</b>\n\n"
             f"<i>\"{corrected}\"</i>\n\n"
-            f"(Spelling aur structure check kar liya gaya hai)",
+            f"(Spelling check kar li gayi hai)",
             parse_mode="HTML",
             reply_markup=markup
         )
@@ -404,7 +416,7 @@ def handle_menu_actions(message):
     if "status" in text_lower:
         recreate_single_card(chat_id)
 
-    # 2. START. WORK (7 GUIDELINES + START & CANCEL BUTTONS)
+    # 2. START. WORK
     elif "start. work" in text_lower or text_lower == "▶️ start. work":
         guidelines_text = (
             "📋 <b>WORK START GUIDELINES & CHECKLIST:</b>\n\n"
@@ -436,7 +448,7 @@ def handle_menu_actions(message):
         )
         force_edit_only()
 
-    # 4. END DAY (2 OPTIONS: DEFAULT YA CUSTOM)
+    # 4. END DAY
     elif "end day" in text_lower:
         markup = InlineKeyboardMarkup()
         markup.row(
@@ -544,7 +556,7 @@ def handle_callbacks(call):
     data_parts = call.data.split(":")
     cmd = data_parts[0]
 
-    # START WORK GUIDELINES RESPONSE
+    # START WORK CALLBACKS
     if cmd == "startwork":
         action = data_parts[1]
         if action == "start":
@@ -575,7 +587,6 @@ def handle_callbacks(call):
             DATA["block_message"] = DEFAULT_END_DAY_MSG
             ADMIN_STATE[chat_id] = None
             
-            # Pehle detailed message
             bot.edit_message_text(
                 "⏸️ <b>DIN END KAR DIYA GAYA HAI!</b>\n\nWorkers ko default message dikhega:\n<i>\"" + DEFAULT_END_DAY_MSG + "\"</i>",
                 chat_id,
@@ -583,8 +594,8 @@ def handle_callbacks(call):
                 parse_mode="HTML"
             )
             force_edit_only()
-            # 10 second baad sirf "⏸️ DIN END KAR DIYA GAYA HAI!" rahega
-            threading.Thread(target=delayed_shorten_end_day_msg, args=(chat_id, call.message.message_id), daemon=True).start()
+            # 10 second baad shorten message
+            threading.Thread(target=delayed_shorten_default_msg, args=(chat_id, call.message.message_id), daemon=True).start()
 
         elif option == "custom":
             ADMIN_STATE[chat_id] = "WAITING_FOR_CUSTOM_MSG"
@@ -604,6 +615,8 @@ def handle_callbacks(call):
             DATA["day_started"] = False
             final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
             DATA["block_message"] = final_msg
+            
+            # Message edit karke confirm dikhao
             bot.edit_message_text(
                 f"✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>\n\nWorkers ko ab yeh message dikhega:\n<i>\"{final_msg}\"</i>",
                 chat_id,
@@ -611,6 +624,8 @@ def handle_callbacks(call):
                 parse_mode="HTML"
             )
             force_edit_only()
+            # 10 SECOND BAAD SHORTEN KARO (SIRF HEADER RAHEGA)
+            threading.Thread(target=delayed_shorten_custom_msg, args=(chat_id, call.message.message_id), daemon=True).start()
         else:
             bot.edit_message_text(
                 "❌ Custom message cancel kar diya gaya hai. Din abhi end nahi hua.",
