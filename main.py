@@ -43,6 +43,7 @@ DATA = {
 SELECTIONS = {}
 ADMIN_STATE = {}
 TEMP_CUSTOM_MSG = {}
+CUSTOM_PROMPT_MSG = {} # Prompt aur user input IDs delete karne ke liye
 edit_lock = threading.Lock()
 
 def auto_correct_text(text):
@@ -215,7 +216,6 @@ def build_worker_selection_markup(action_type, selected_workers):
         )
     return markup
 
-# 10 Sec baad default din end msg chota karna
 def delayed_shorten_default_msg(chat_id, message_id):
     time.sleep(10)
     try:
@@ -228,7 +228,6 @@ def delayed_shorten_default_msg(chat_id, message_id):
     except Exception:
         pass
 
-# 10 Sec baad custom message ko chota karna
 def delayed_shorten_custom_msg(chat_id, message_id):
     time.sleep(10)
     try:
@@ -394,6 +393,9 @@ def handle_menu_actions(message):
     # Custom message input handle
     if ADMIN_STATE.get(chat_id) == "WAITING_FOR_CUSTOM_MSG":
         ADMIN_STATE[chat_id] = None
+        # User ne jo text bheja uski ID save karein taaki baad mein delete kar sakein
+        CUSTOM_PROMPT_MSG[f"{chat_id}_user_input"] = message.message_id
+        
         corrected = auto_correct_text(text)
         TEMP_CUSTOM_MSG[chat_id] = corrected
 
@@ -402,7 +404,7 @@ def handle_menu_actions(message):
             InlineKeyboardButton("✅ Haan, Bhejo", callback_data="confirm_custom:yes"),
             InlineKeyboardButton("❌ Cancel", callback_data="confirm_custom:no")
         )
-        bot.send_message(
+        conf_msg = bot.send_message(
             chat_id,
             f"❓ <b>Kya yahi custom message set karna hai?</b>\n\n"
             f"<i>\"{corrected}\"</i>\n\n"
@@ -410,6 +412,7 @@ def handle_menu_actions(message):
             parse_mode="HTML",
             reply_markup=markup
         )
+        CUSTOM_PROMPT_MSG[f"{chat_id}_confirm_msg"] = conf_msg.message_id
         return
 
     # 1. STATUS
@@ -594,11 +597,12 @@ def handle_callbacks(call):
                 parse_mode="HTML"
             )
             force_edit_only()
-            # 10 second baad shorten message
             threading.Thread(target=delayed_shorten_default_msg, args=(chat_id, call.message.message_id), daemon=True).start()
 
         elif option == "custom":
             ADMIN_STATE[chat_id] = "WAITING_FOR_CUSTOM_MSG"
+            # Prompt message save taaki baad me delete ho sake
+            CUSTOM_PROMPT_MSG[f"{chat_id}_prompt"] = call.message.message_id
             bot.edit_message_text(
                 "✍️ <b>Custom Message Mode:</b>\n\nAb message likh kar bhejein jo aap workers ko dikhana chahte hain.",
                 chat_id,
@@ -611,29 +615,46 @@ def handle_callbacks(call):
     # CONFIRM CUSTOM MESSAGE
     if cmd == "confirm_custom":
         choice = data_parts[1]
+        
+        # 1. Custom prompt message delete karein (✍️ Custom Message Mode)
+        prompt_id = CUSTOM_PROMPT_MSG.pop(f"{chat_id}_prompt", None)
+        if prompt_id:
+            try:
+                bot.delete_message(chat_id, prompt_id)
+            except Exception:
+                pass
+
+        # 2. User ka likha hua message text bubble delete karein
+        user_in_id = CUSTOM_PROMPT_MSG.pop(f"{chat_id}_user_input", None)
+        if user_in_id:
+            try:
+                bot.delete_message(chat_id, user_in_id)
+            except Exception:
+                pass
+
         if choice == "yes":
             DATA["day_started"] = False
             final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
             DATA["block_message"] = final_msg
             
-            # Message edit karke confirm dikhao
+            # Confirmation message ko edit karke clean message banayein
             bot.edit_message_text(
-                f"✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>\n\nWorkers ko ab yeh message dikhega:\n<i>\"{final_msg}\"</i>",
+                "✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>",
                 chat_id,
                 call.message.message_id,
                 parse_mode="HTML"
             )
             force_edit_only()
-            # 10 SECOND BAAD SHORTEN KARO (SIRF HEADER RAHEGA)
-            threading.Thread(target=delayed_shorten_custom_msg, args=(chat_id, call.message.message_id), daemon=True).start()
         else:
             bot.edit_message_text(
-                "❌ Custom message cancel kar diya gaya hai. Din abhi end nahi hua.",
+                "❌ <b>Custom message cancel kar diya gaya hai. Din abhi end nahi hua.</b>",
                 chat_id,
                 call.message.message_id,
                 parse_mode="HTML"
             )
+
         TEMP_CUSTOM_MSG.pop(chat_id, None)
+        CUSTOM_PROMPT_MSG.pop(f"{chat_id}_confirm_msg", None)
         bot.answer_callback_query(call.id)
         return
 
