@@ -13,15 +13,16 @@ ALLOWED_ADMIN_ID = 5831204930
 bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
-DEFAULT_END_DAY_MSG = "⏸️ Abhi din shuru nahi hua bhidu, thoda ruk — admin start karega tabhi kaam milega."
-CLEAN_7H_MSG = "⏸️ Ajj ka din khatm bhidu,😤 kal admin start karega tabhi kaam milega.."
+STATE_FILE = "server_state.json"
+DEFAULT_END_DAY_MSG = "⏸️ Abhi kaam  shuru nahi hua bhidu, thoda ruk — admin start karega tabhi kaam milega."
+CLEAN_7H_MSG = "▶️ Ajj ka kaam khatm bhidu,😤 kal admin start karega tabhi kaam milega.."
 
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "see_data_msg_id": None,
     "clean_rdp_triggered": False,
-    "clean_7h_until": 0,           # 7 Hours timer track karne ke liye
+    "clean_7h_until": 0,           # Persistent 7 Hours Timer
     "day_started": False,
     "block_message": DEFAULT_END_DAY_MSG,
     "day_token": str(int(time.time())),
@@ -41,6 +42,34 @@ DATA = {
         }
     }
 }
+
+# --- State Persistence Functions (Server Restart se bachane ke liye) ---
+def save_persistent_state():
+    try:
+        payload = {
+            "clean_7h_until": DATA.get("clean_7h_until", 0),
+            "clean_rdp_triggered": DATA.get("clean_rdp_triggered", False),
+            "day_started": DATA.get("day_started", False),
+            "block_message": DATA.get("block_message", DEFAULT_END_DAY_MSG)
+        }
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+def load_persistent_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                DATA["clean_7h_until"] = saved.get("clean_7h_until", 0)
+                DATA["clean_rdp_triggered"] = saved.get("clean_rdp_triggered", False)
+                DATA["day_started"] = saved.get("day_started", False)
+                DATA["block_message"] = saved.get("block_message", DEFAULT_END_DAY_MSG)
+        except Exception:
+            pass
+
+load_persistent_state()
 
 SELECTIONS = {}
 ADMIN_STATE = {}
@@ -249,9 +278,11 @@ def delayed_shorten_default_msg(chat_id, message_id):
     except Exception:
         pass
 
+# 7 HOURS EXACT CHECK
 def get_current_block_message():
     current_time = time.time()
-    if DATA.get("clean_7h_until", 0) > current_time:
+    clean_until = DATA.get("clean_7h_until", 0)
+    if clean_until > current_time:
         return CLEAN_7H_MSG
     return DATA.get("block_message", DEFAULT_END_DAY_MSG)
 
@@ -458,7 +489,7 @@ def handle_menu_actions(message):
         )
         bot.send_message(chat_id, guidelines_text, parse_mode="HTML", reply_markup=markup)
 
-    # 3. END DAY + CLEAN RDP
+    # 3. END DAY + CLEAN RDP (DUPLICATE CHECK)
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
         is_clean_active = DATA.get("clean_rdp_triggered", False) or (DATA.get("clean_7h_until", 0) > time.time())
         if not DATA.get("day_started", False) and is_clean_active:
@@ -488,7 +519,7 @@ def handle_menu_actions(message):
             curr_msg = get_current_block_message()
             markup = InlineKeyboardMarkup()
             markup.row(
-                InlineKeyboardButton("⏹️ Reset to Default (Din Shuru Nhi Hua)", callback_data="endday:default"),
+                InlineKeyboardButton("⏹️ Reset to Default", callback_data="endday:default"),
                 InlineKeyboardButton("✍️ Update Custom Message", callback_data="endday:custom")
             )
             warn_msg = bot.send_message(
@@ -626,14 +657,16 @@ def handle_callbacks(call):
             bot.answer_callback_query(call.id, "❌ Cancelled!")
         return
 
-    # CLEAN RDP CONFIRMATION CALLBACK
+    # CLEAN RDP CONFIRMATION CALLBACK (7 HOURS TIMER SAVE)
     if cmd == "confirm_clean":
         choice = data_parts[1]
         if choice == "yes":
             DATA["day_started"] = False
             DATA["clean_rdp_triggered"] = True
+            # Exactly 7 Hours (7 * 3600 seconds)
             DATA["clean_7h_until"] = time.time() + (7 * 3600)
             DATA["block_message"] = DEFAULT_END_DAY_MSG
+            save_persistent_state()
 
             bot.edit_message_text(
                 "🧹 <b>din end + clean kar diya hai</b>",
@@ -660,6 +693,7 @@ def handle_callbacks(call):
             DATA["clean_rdp_triggered"] = False
             DATA["clean_7h_until"] = 0
             DATA["block_message"] = DEFAULT_END_DAY_MSG
+            save_persistent_state()
             bot.edit_message_text(
                 "✅ <b>work start ho gaya hai ab team work start kar sakti hai!... Email Bot Start.</b>",
                 chat_id,
@@ -683,7 +717,9 @@ def handle_callbacks(call):
         if option == "default":
             DATA["day_started"] = False
             DATA["clean_7h_until"] = 0
+            DATA["clean_rdp_triggered"] = False
             DATA["block_message"] = DEFAULT_END_DAY_MSG
+            save_persistent_state()
             ADMIN_STATE[chat_id] = None
             
             bot.edit_message_text(
@@ -728,8 +764,10 @@ def handle_callbacks(call):
         if choice == "yes":
             DATA["day_started"] = False
             DATA["clean_7h_until"] = 0
+            DATA["clean_rdp_triggered"] = False
             final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
             DATA["block_message"] = final_msg
+            save_persistent_state()
             
             bot.edit_message_text(
                 "✅ <b>DIN END HO GAYA (CUSTOM MESSAGE SET)!</b>",
