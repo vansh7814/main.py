@@ -14,12 +14,14 @@ bot = telebot.TeleBot(ADMIN_BOT_TOKEN)
 app = Flask(__name__)
 
 DEFAULT_END_DAY_MSG = "⏸️ Abhi din shuru nahi hua bhidu, thoda ruk — admin start karega tabhi kaam milega."
+CLEAN_7H_MSG = "ajj ka din khatm bhidu, kal admin start karega tabhi kaam milega."
 
 DATA = {
     "chat_id": ALLOWED_ADMIN_ID,
     "msg_id": None,
     "see_data_msg_id": None,
     "clean_rdp_triggered": False,
+    "clean_7h_until": 0,           # 7 Hours timer track karne ke liye
     "day_started": False,
     "block_message": DEFAULT_END_DAY_MSG,
     "day_token": str(int(time.time())),
@@ -235,10 +237,18 @@ def delayed_shorten_default_msg(chat_id, message_id):
     except Exception:
         pass
 
+# ACTIVE BLOCK MESSAGE CALCULATION (7 Hours Check)
+def get_current_block_message():
+    current_time = time.time()
+    if DATA.get("clean_7h_until", 0) > current_time:
+        return CLEAN_7H_MSG
+    return DATA.get("block_message", DEFAULT_END_DAY_MSG)
+
 @app.route('/')
 def home():
     return "Admin & Watcher Central API Active!"
 
+# Email Bot is API ko call karega
 @app.route('/check_day', methods=['GET', 'POST'])
 def check_day():
     req_data = request.args if request.method == 'GET' else (request.json or {})
@@ -246,11 +256,12 @@ def check_day():
     worker = normalize_worker_name(raw_worker)
 
     is_day_started = DATA.get("day_started", False)
+    active_msg = get_current_block_message()
 
     return jsonify({
         "day_started": is_day_started,
         "clean_rdp": DATA.get("clean_rdp_triggered", False),
-        "block_message": DATA.get("block_message", DEFAULT_END_DAY_MSG)
+        "block_message": active_msg
     }), 200
 
 @app.route('/event', methods=['GET', 'POST'])
@@ -437,23 +448,24 @@ def handle_menu_actions(message):
         )
         bot.send_message(chat_id, guidelines_text, parse_mode="HTML", reply_markup=markup)
 
-    # 3. END DAY + CLEAN RDP
+    # 3. END DAY + CLEAN RDP (CONFIRMATION PROMPT)
     elif "clean rdp" in text_lower or "end day +" in text_lower or "end day+ clean rdp" in text_lower:
-        DATA["day_started"] = False
-        DATA["clean_rdp_triggered"] = True
-        DATA["block_message"] = DEFAULT_END_DAY_MSG
+        markup = InlineKeyboardMarkup()
+        markup.row(
+            InlineKeyboardButton("✅ Haan", callback_data="confirm_clean:yes"),
+            InlineKeyboardButton("❌ Cancel", callback_data="confirm_clean:no")
+        )
         bot.send_message(
             chat_id,
-            "🧹 <b>DIN END + RDP CLEAN SIGNAL SENT!</b>\n\nEmail Bot stop ho gaya hai aur RDP clean trigger bhej diya gaya hai.",
-            parse_mode="HTML"
+            "❓ <b>Kya aap sach me Din End karke sabhi RDP clean karna chahte hain?</b>",
+            parse_mode="HTML",
+            reply_markup=markup
         )
-        force_edit_only()
 
     # 4. END DAY
     elif "end day" in text_lower:
-        # Agar din pehle se hi band hai toh Custom Message update karne ka direct option milega
         if not DATA.get("day_started", False):
-            curr_msg = DATA.get("block_message", DEFAULT_END_DAY_MSG)
+            curr_msg = get_current_block_message()
             markup = InlineKeyboardMarkup()
             markup.row(InlineKeyboardButton("✍️ Update Custom Message", callback_data="endday:custom"))
             warn_msg = bot.send_message(
@@ -573,11 +585,39 @@ def handle_callbacks(call):
     data_parts = call.data.split(":")
     cmd = data_parts[0]
 
+    # CLEAN RDP CONFIRMATION CALLBACK
+    if cmd == "confirm_clean":
+        choice = data_parts[1]
+        if choice == "yes":
+            DATA["day_started"] = False
+            DATA["clean_rdp_triggered"] = True
+            # Agle 7 ghante tak 7h wala message set rahega
+            DATA["clean_7h_until"] = time.time() + (7 * 3600)
+            DATA["block_message"] = DEFAULT_END_DAY_MSG # 7 hr baad fallback
+
+            bot.edit_message_text(
+                "🧹 <b>din end + clean kar diya hai</b>",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+            force_edit_only()
+        else:
+            bot.edit_message_text(
+                "❌ Clean RDP cancel kar diya gaya hai.",
+                chat_id,
+                call.message.message_id,
+                parse_mode="HTML"
+            )
+        bot.answer_callback_query(call.id)
+        return
+
     # START WORK CALLBACKS
     if cmd == "startwork":
         action = data_parts[1]
         if action == "start":
             DATA["day_started"] = True
+            DATA["clean_7h_until"] = 0
             DATA["block_message"] = DEFAULT_END_DAY_MSG
             bot.edit_message_text(
                 "✅ <b>work start ho gaya hai ab team work start kar sakti hai!... Email Bot Start.</b>",
@@ -601,6 +641,7 @@ def handle_callbacks(call):
         option = data_parts[1]
         if option == "default":
             DATA["day_started"] = False
+            DATA["clean_7h_until"] = 0
             DATA["block_message"] = DEFAULT_END_DAY_MSG
             ADMIN_STATE[chat_id] = None
             
@@ -645,6 +686,7 @@ def handle_callbacks(call):
 
         if choice == "yes":
             DATA["day_started"] = False
+            DATA["clean_7h_until"] = 0
             final_msg = TEMP_CUSTOM_MSG.get(chat_id, DEFAULT_END_DAY_MSG)
             DATA["block_message"] = final_msg
             
